@@ -61,9 +61,12 @@ const SESSION_TTL_MS = 2 * 60 * 60 * 1000;  // 2 hours
 
 // === DeepSeek Web API Config — loaded from external config file ===
 const DS_CONFIG_PATH = process.env.DEEPSEEK_AUTH_PATH || path.join(__dirname, 'deepseek-auth.json');
+const DEFAULT_ACCOUNT_COOLDOWN_MS = Number(process.env.DEEPSEEK_ACCOUNT_COOLDOWN_MS || 10 * 60 * 1000);
 let DS_CONFIG = {};
-let BASE_HEADERS = {};
-function buildBaseHeaders() {
+let dsHeaders = {};
+const accounts = [];
+let accountRoundRobin = 0;
+function buildBaseHeaders(config = DS_CONFIG) {
     return {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
         "x-client-platform": "web",
@@ -71,33 +74,119 @@ function buildBaseHeaders() {
         "x-client-locale": "ru",
         "x-client-timezone-offset": "14400",
         "x-app-version": "2.0.0",
-        "Authorization": `Bearer ${DS_CONFIG.token || ''}`,
-        "x-hif-dliq": DS_CONFIG.hif_dliq || '',
-        "x-hif-leim": DS_CONFIG.hif_leim || '',
+        "Authorization": `Bearer ${config.token || ''}`,
+        "x-hif-dliq": config.hif_dliq || '',
+        "x-hif-leim": config.hif_leim || '',
         "Origin": "https://chat.deepseek.com",
         "Referer": "https://chat.deepseek.com/",
-        "Cookie": DS_CONFIG.cookie || '',
+        "Cookie": config.cookie || '',
         "Content-Type": "application/json",
     };
 }
-function loadDeepSeekConfig({ fatal = true } = {}) {
-    try {
-        const raw = fs.readFileSync(DS_CONFIG_PATH, 'utf8');
-        DS_CONFIG = JSON.parse(raw);
-        BASE_HEADERS = buildBaseHeaders();
-        console.log(`[DS-API] Loaded auth config from ${DS_CONFIG_PATH}`);
-        return true;
-    } catch (e) {
-        DS_CONFIG = {};
-        BASE_HEADERS = buildBaseHeaders();
-        if (fatal) {
-            console.error(`[DS-API] FATAL: Could not load auth config: ${e.message}`);
-            process.exit(1);
+function discoverAuthPaths() {
+    if (process.env.DEEPSEEK_AUTH_DIR) {
+        try {
+            return fs.readdirSync(process.env.DEEPSEEK_AUTH_DIR)
+                .filter(f => f.endsWith('.json'))
+                .sort()
+                .map(f => path.join(process.env.DEEPSEEK_AUTH_DIR, f));
+        } catch (e) {
+            console.error(`[DS-API] Could not read DEEPSEEK_AUTH_DIR: ${e.message}`);
+            return [];
         }
-        return false;
+    }
+    if (process.env.DEEPSEEK_AUTH_PATH && process.env.DEEPSEEK_AUTH_PATH.includes(',')) {
+        return process.env.DEEPSEEK_AUTH_PATH.split(',').map(s => s.trim()).filter(Boolean);
+    }
+    return [DS_CONFIG_PATH];
+}
+function loadDeepSeekConfig({ fatal = true } = {}) {
+    accounts.length = 0;
+    const paths = discoverAuthPaths();
+    for (const file of paths) {
+        try {
+            const raw = fs.readFileSync(file, 'utf8');
+            const config = JSON.parse(raw);
+            const id = `account_${accounts.length + 1}`;
+            accounts.push({ id, file, config, headers: buildBaseHeaders(config), cooldownUntil: 0, failures: 0, lastUsedAt: 0 });
+        } catch (e) {
+            console.error(`[DS-API] Could not load auth config ${file}: ${e.message}`);
+        }
+    }
+    DS_CONFIG = accounts[0]?.config || {};
+    dsHeaders = accounts[0]?.headers || buildBaseHeaders({});
+    if (accounts.length > 0) {
+        console.log(`[DS-API] Loaded ${accounts.length} auth account(s): ${accounts.map(a => a.id).join(', ')}`);
+        return true;
+    }
+    if (fatal) {
+        console.error(`[DS-API] FATAL: Could not load any auth config. Expected ${paths.join(', ') || DS_CONFIG_PATH}`);
+        process.exit(1);
+    }
+    return false;
+}
+function hasAuthConfig() { return accounts.some(a => a.config.token && a.config.cookie); }
+function accountStatus(account) {
+    return {
+        id: account.id,
+        ready: !!(account.config.token && account.config.cookie),
+        cooldown: account.cooldownUntil > Date.now(),
+        cooldown_remaining_sec: Math.max(0, Math.ceil((account.cooldownUntil - Date.now()) / 1000)),
+        failures: account.failures,
+        last_used_at: account.lastUsedAt || null,
+    };
+}
+function selectAccountForSession(session) {
+    const now = Date.now();
+    if (session.accountId) {
+        const sticky = accounts.find(a => a.id === session.accountId);
+        if (sticky && sticky.config.token && sticky.config.cookie && sticky.cooldownUntil <= now) return sticky;
+        if (sticky && sticky.cooldownUntil > now) {
+            // A DeepSeek chat_session belongs to the auth account that created it.
+            // If that account is rate-limited/expired, do not keep hammering it;
+            // reset the web session and let a healthy account take over.
+            session.id = null;
+            session.parentMessageId = null;
+            session.createdAt = null;
+            session.messageCount = 0;
+        }
+        session.accountId = null;
+    }
+    const ready = accounts.filter(a => a.config.token && a.config.cookie && a.cooldownUntil <= now);
+    if (ready.length === 0) {
+        const waiting = accounts.filter(a => a.config.token && a.config.cookie).sort((a, b) => a.cooldownUntil - b.cooldownUntil)[0];
+        if (waiting) {
+            const waitSec = Math.max(1, Math.ceil((waiting.cooldownUntil - now) / 1000));
+            throw new Error(`All DeepSeek auth accounts are cooling down. Retry in ~${waitSec}s or import a fresh account with npm run auth:import.`);
+        }
+        throw new Error('No valid DeepSeek auth accounts. Run npm run auth or npm run auth:import.');
+    }
+    const account = ready[accountRoundRobin % ready.length];
+    accountRoundRobin++;
+    session.accountId = account.id;
+    return account;
+}
+function markAccountFailure(account, status, reason = '') {
+    if (!account) return;
+    account.failures++;
+    if ([401, 403, 429].includes(Number(status))) {
+        account.cooldownUntil = Date.now() + DEFAULT_ACCOUNT_COOLDOWN_MS;
+        console.log(`[account:${account.id}] cooldown for ${Math.round(DEFAULT_ACCOUNT_COOLDOWN_MS / 1000)}s after HTTP ${status}${reason ? ` (${reason})` : ''}`);
     }
 }
-function hasAuthConfig() { return !!(DS_CONFIG.token && DS_CONFIG.cookie); }
+async function readDeepSeekJsonResponse(resp, label, account) {
+    const text = await resp.text();
+    let json = null;
+    if (text) {
+        try { json = JSON.parse(text); }
+        catch (e) {
+            markAccountFailure(account, resp.status, label);
+            throw new Error(`DeepSeek returned non-JSON ${label} response (HTTP ${resp.status}). Run npm run doctor. First chars: ${text.substring(0, 120)}`);
+        }
+    }
+    if (!resp.ok) markAccountFailure(account, resp.status, label);
+    return { json, text };
+}
 loadDeepSeekConfig({ fatal: false });
 
 function createSession() {
@@ -106,6 +195,7 @@ function createSession() {
         parentMessageId: null,
         createdAt: null,
         messageCount: 0,
+        accountId: null,
         history: [],
     };
 }
@@ -117,8 +207,8 @@ function getOrCreateAgentSession(agentId) {
     return sessions.get(agentId);
 }
 
-async function solvePOW(challenge) {
-    const resp = await fetch(DS_CONFIG.wasmUrl);
+async function solvePOW(challenge, config = DS_CONFIG) {
+    const resp = await fetch(config.wasmUrl);
     const wasmBytes = await resp.arrayBuffer();
     const mod = await WebAssembly.instantiate(wasmBytes, { wbg: {} });
     const e = mod.instance.exports;
@@ -249,7 +339,10 @@ function isSupportedModel(model) { return resolveModelConfig(model).supported ==
 async function askDeepSeekStream(prompt, agentId, model = 'deepseek-default') {
     const modelCfg = resolveModelConfig(model);
     const session = getOrCreateAgentSession(agentId);
-    const agentTag = `[${agentId}]`;
+    const account = selectAccountForSession(session);
+    const dsHeaders = account.headers;
+    account.lastUsedAt = Date.now();
+    const agentTag = `[${agentId}/acct:${account.id}]`;
 
     // Auto-reset on deep message chain
     if (session.id && session.messageCount >= MAX_MESSAGE_DEPTH) {
@@ -271,19 +364,34 @@ async function askDeepSeekStream(prompt, agentId, model = 'deepseek-default') {
     }
 
     const cr = await fetch('https://chat.deepseek.com/api/v0/chat/create_pow_challenge', {
-        method: 'POST', headers: BASE_HEADERS,
+        method: 'POST', headers: dsHeaders,
         body: JSON.stringify({ target_path: '/api/v0/chat/completion' })
     });
-    const chalJson = JSON.parse(await cr.text());
-    const challenge = chalJson.data.biz_data.challenge;
-    const answer = await solvePOW(challenge);
+    const chalText = await cr.text();
+    if (!cr.ok) {
+        markAccountFailure(account, cr.status, 'pow challenge');
+        throw new Error(`DeepSeek auth/network error while creating PoW challenge: HTTP ${cr.status}. Run npm run doctor. If auth expired, run npm run auth or npm run auth:import.`);
+    }
+    let chalJson;
+    try { chalJson = JSON.parse(chalText); }
+    catch (e) { throw new Error(`DeepSeek returned non-JSON PoW response. Run npm run doctor. First chars: ${chalText.substring(0, 120)}`); }
+    const challenge = chalJson?.data?.biz_data?.challenge;
+    if (!challenge) {
+        throw new Error('DeepSeek PoW response has no data.biz_data.challenge. Auth may be expired, captcha may be required, or DeepSeek changed Web API. Run npm run doctor, then npm run auth.');
+    }
+    const answer = await solvePOW(challenge, account.config);
 
     if (!session.id) {
         const sr = await fetch('https://chat.deepseek.com/api/v0/chat_session/create', {
-            method: 'POST', headers: BASE_HEADERS, body: '{}'
+            method: 'POST', headers: dsHeaders, body: '{}'
         });
-        const sessionData = await sr.json();
-        session.id = sessionData.data.biz_data.chat_session?.id || sessionData.data.biz_data.id;
+        const { json: sessionData, text: sessionText } = await readDeepSeekJsonResponse(sr, 'session create', account);
+        const createdSessionId = sessionData?.data?.biz_data?.chat_session?.id || sessionData?.data?.biz_data?.id;
+        if (!sr.ok || !createdSessionId) {
+            throw new Error(`Could not create DeepSeek chat session (HTTP ${sr.status}). Auth may be expired/captcha-blocked. Run npm run doctor, then npm run auth. First chars: ${String(sessionText || '').substring(0, 120)}`);
+        }
+        session.id = createdSessionId;
+        session.accountId = account.id;
         session.parentMessageId = null;
         session.createdAt = Date.now();
         session.messageCount = 0;
@@ -299,7 +407,7 @@ async function askDeepSeekStream(prompt, agentId, model = 'deepseek-default') {
     })).toString('base64');
     const resp = await fetch('https://chat.deepseek.com/api/v0/chat/completion', {
         method: 'POST',
-        headers: { ...BASE_HEADERS, 'X-DS-PoW-Response': powB64 },
+        headers: { ...dsHeaders, 'X-DS-PoW-Response': powB64 },
         body: JSON.stringify({
             chat_session_id: session.id,
             parent_message_id: session.parentMessageId,
@@ -312,6 +420,7 @@ async function askDeepSeekStream(prompt, agentId, model = 'deepseek-default') {
 
     // If session expired, reset and retry once
     if (resp.status !== 200) {
+        markAccountFailure(account, resp.status, 'completion');
         const errText = await resp.text();
         console.log(`${agentTag} Session error (${resp.status}): ${errText.substring(0, 100)}`);
         if (resp.status === 400 || resp.status === 404 || resp.status === 500) {
@@ -322,10 +431,15 @@ async function askDeepSeekStream(prompt, agentId, model = 'deepseek-default') {
             session.messageCount = 0;
 
             const sr2 = await fetch('https://chat.deepseek.com/api/v0/chat_session/create', {
-                method: 'POST', headers: BASE_HEADERS, body: '{}'
+                method: 'POST', headers: dsHeaders, body: '{}'
             });
-            const sessionData2 = await sr2.json();
-            session.id = sessionData2.data.biz_data.chat_session?.id || sessionData2.data.biz_data.id;
+            const { json: sessionData2, text: sessionText2 } = await readDeepSeekJsonResponse(sr2, 'session recreate', account);
+            const createdSessionId2 = sessionData2?.data?.biz_data?.chat_session?.id || sessionData2?.data?.biz_data?.id;
+            if (!sr2.ok || !createdSessionId2) {
+                throw new Error(`Could not recreate DeepSeek chat session (HTTP ${sr2.status}). Run npm run doctor, then npm run auth. First chars: ${String(sessionText2 || '').substring(0, 120)}`);
+            }
+            session.id = createdSessionId2;
+            session.accountId = account.id;
             session.parentMessageId = null;
             session.createdAt = Date.now();
             console.log(`${agentTag} Created new session: ${session.id}`);
@@ -337,7 +451,7 @@ async function askDeepSeekStream(prompt, agentId, model = 'deepseek-default') {
             })).toString('base64');
             const resp2 = await fetch('https://chat.deepseek.com/api/v0/chat/completion', {
                 method: 'POST',
-                headers: { ...BASE_HEADERS, 'X-DS-PoW-Response': newPowB64 },
+                headers: { ...dsHeaders, 'X-DS-PoW-Response': newPowB64 },
                 body: JSON.stringify({
                     chat_session_id: session.id,
                     parent_message_id: null,
@@ -959,7 +1073,7 @@ const server = http.createServer(async (req, res) => {
     // Health check
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ok', service: 'FreeDeepseekAPI', watermark: FORGETMEAI_WATERMARK, models: SUPPORTED_MODEL_IDS, unsupported_models: Object.keys(MODEL_CONFIGS).filter(id => !MODEL_CONFIGS[id].supported), agents: sessions.size, config_ready: hasAuthConfig() }));
+        res.end(JSON.stringify({ status: 'ok', service: 'FreeDeepseekAPI', watermark: FORGETMEAI_WATERMARK, models: SUPPORTED_MODEL_IDS, unsupported_models: Object.keys(MODEL_CONFIGS).filter(id => !MODEL_CONFIGS[id].supported), agents: sessions.size, accounts: accounts.map(accountStatus), config_ready: hasAuthConfig(), session_reuse: { strategy: 'sticky per x-agent-session/user', ttl_minutes: Math.round(SESSION_TTL_MS / 60000), max_messages: MAX_MESSAGE_DEPTH, reset_all: 'POST /reset-session?agent=all' } }));
         return;
     }
 
@@ -985,6 +1099,7 @@ const server = http.createServer(async (req, res) => {
                 agent: agentId,
                 session_id: session.id,
                 message_count: session.messageCount,
+                account: session.accountId,
                 history_size: session.history.length,
                 age_min: session.createdAt ? Math.round((Date.now() - session.createdAt) / 60000) : 0,
             });
@@ -1330,7 +1445,8 @@ async function runAuthScript() {
 function printStatus() {
     console.log(`\n${formatWatermark()}`);
     console.log(`Auth: ${hasAuthConfig() ? '✅ OK' : '❌ не найден deepseek-auth.json'}`);
-    console.log(`Auth file: ${DS_CONFIG_PATH}`);
+    console.log(`Auth source: ${process.env.DEEPSEEK_AUTH_DIR || DS_CONFIG_PATH}`);
+    console.log(`Аккаунты: ${accounts.length ? accounts.map(a => `${a.id}${a.cooldownUntil > Date.now() ? ' (cooldown)' : ''}`).join(', ') : 'нет'}`);
     console.log(`Рабочие модели: ${SUPPORTED_MODEL_IDS.join(', ')}`);
     console.log('Нерабочие/скрытые aliases: ' + Object.keys(MODEL_CONFIGS).filter(id => !MODEL_CONFIGS[id].supported).join(', '));
     console.log('Capabilities: GET /v1/model-capabilities');
@@ -1346,23 +1462,27 @@ async function showStartupMenu() {
         console.log('\n=== Меню ===');
         console.log(`ForgetMeAI: ${FORGETMEAI_WATERMARK}`);
         console.log('1 - Авторизоваться / обновить DeepSeek login');
-        console.log('2 - Показать модели и статусы');
-        console.log('3 - Запустить прокси (по умолчанию)');
-        console.log('4 - Выход');
-        let choice = await prompt('Ваш выбор (Enter = 3): ');
-        if (!choice) choice = '3';
+        console.log('2 - Импортировать auth-файл / cookies');
+        console.log('3 - Показать модели и статусы');
+        console.log('4 - Запустить прокси (по умолчанию)');
+        console.log('5 - Выход');
+        let choice = await prompt('Ваш выбор (Enter = 4): ');
+        if (!choice) choice = '4';
         if (choice === '1') {
             await runAuthScript();
         } else if (choice === '2') {
+            spawnSync(process.execPath, [path.join(__dirname, 'scripts', 'auth_import.js')], { stdio: 'inherit', env: process.env });
+            loadDeepSeekConfig({ fatal: false });
+        } else if (choice === '3') {
             console.log(JSON.stringify(ALL_MODEL_CAPABILITIES, null, 2));
             await prompt('\nНажмите Enter, чтобы вернуться в меню...');
-        } else if (choice === '3') {
+        } else if (choice === '4') {
             if (!hasAuthConfig()) {
-                console.log('Нужен deepseek-auth.json. Запустите пункт 1.');
+                console.log('Нужен deepseek-auth.json. Запустите пункт 1 или 2.');
                 continue;
             }
             return true;
-        } else if (choice === '4') {
+        } else if (choice === '5') {
             return false;
         }
     }

@@ -35,6 +35,10 @@ function runDirectAuth() {
   const script = path.join(__dirname, 'deepseek_chrome_auth.js');
   return spawnSync(process.execPath, [script], { stdio: 'inherit', env: process.env }).status === 0;
 }
+function runImportAuth() {
+  const script = path.join(__dirname, 'auth_import.js');
+  return spawnSync(process.execPath, [script], { stdio: 'inherit', env: process.env }).status === 0;
+}
 function removeLocalAuth() {
   if (fs.existsSync(AUTH_PATH)) fs.rmSync(AUTH_PATH, { force: true });
   console.log('Удалён deepseek-auth.json. Chrome profile оставлен, чтобы не разлогинивать браузер без нужды.');
@@ -46,6 +50,7 @@ function printHelp() {
   divider();
   console.log('Опции:');
   console.log('  --login     Открыть Chrome и обновить auth');
+  console.log('  --import    Импортировать готовый deepseek-auth.json / browser cookies');
   console.log('  --status    Показать статус auth');
   console.log('  --remove    Удалить локальный deepseek-auth.json');
   console.log('  --help      Справка');
@@ -60,20 +65,23 @@ async function menu() {
     divider();
     console.log('Меню:');
     console.log('1 - Авторизоваться / обновить DeepSeek login');
-    console.log('2 - Показать статус');
-    console.log('3 - Удалить локальный auth файл');
-    console.log('4 - Выход');
-    const choice = (await prompt('Ваш выбор (Enter = 4): ')) || '4';
+    console.log('2 - Импортировать auth-файл / cookies');
+    console.log('3 - Показать статус');
+    console.log('4 - Удалить локальный auth файл');
+    console.log('5 - Выход');
+    const choice = (await prompt('Ваш выбор (Enter = 5): ')) || '5';
     if (choice === '1') runDirectAuth();
-    else if (choice === '2') { status(); await prompt('\nНажмите Enter, чтобы вернуться в меню...'); }
-    else if (choice === '3') removeLocalAuth();
-    else if (choice === '4') break;
+    else if (choice === '2') runImportAuth();
+    else if (choice === '3') { status(); await prompt('\nНажмите Enter, чтобы вернуться в меню...'); }
+    else if (choice === '4') removeLocalAuth();
+    else if (choice === '5') break;
   }
 }
 (async () => {
   const args = new Set(process.argv.slice(2));
   if (args.has('--help') || args.has('-h')) return printHelp();
   if (args.has('--login') || args.has('--add') || args.has('--relogin')) return void runDirectAuth();
+  if (args.has('--import')) return void runImportAuth();
   if (args.has('--status') || args.has('--list')) return status();
   if (args.has('--remove')) return removeLocalAuth();
   await menu();

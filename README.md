@@ -35,6 +35,13 @@ ForgetMeAI: https://t.me/forgetmeai
 - [Что это даёт](#-что-это-даёт)
 - [Возможности](#-возможности)
 - [Быстрый старт](#-быстрый-старт)
+- [Windows запуск](#-windows-запуск)
+- [Linux / Chromium запуск](#-linux--chromium-запуск)
+- [VPS / headless запуск](#-vps--headless-запуск)
+- [Diagnostics / doctor](#-diagnostics--doctor)
+- [Session reuse и сброс чатов](#-session-reuse-и-сброс-чатов)
+- [Multi-account pool](#-multi-account-pool)
+- [Идеи для консольной авторизации](#-идеи-для-консольной-авторизации)
 - [Проверка работы](#-проверка-работы)
 - [Примеры запросов](#-примеры-запросов)
   - [Chat Completions](#chat-completions)
@@ -113,6 +120,197 @@ SKIP_ACCOUNT_MENU=1 npm start
 ```text
 http://localhost:9655
 ```
+
+---
+
+## 🪟 Windows запуск
+
+```powershell
+git clone https://github.com/ForgetMeAI/FreeDeepseekAPI.git
+cd FreeDeepseekAPI
+npm run auth
+npm start
+```
+
+Если Chrome установлен нестандартно, явно укажите путь:
+
+```powershell
+$env:CHROME_PATH="C:\Program Files\Google\Chrome\Application\chrome.exe"
+npm run auth
+```
+
+Если Chrome не найден, `npm run auth` теперь печатает готовые инструкции для Windows/macOS/Linux вместо загадочного stack trace.
+
+---
+
+## 🐧 Linux / Chromium запуск
+
+```bash
+git clone https://github.com/ForgetMeAI/FreeDeepseekAPI.git
+cd FreeDeepseekAPI
+CHROME_PATH=$(which chromium) npm run auth
+npm start
+```
+
+Если Chromium называется иначе:
+
+```bash
+CHROME_PATH=$(which chromium-browser) npm run auth
+# или
+CHROME_PATH=$(which google-chrome) npm run auth
+```
+
+---
+
+## 🖥 VPS / headless запуск
+
+Самый надёжный flow без Chrome на сервере:
+
+1. На домашнем ПК, где есть GUI/Chrome:
+
+```bash
+npm run auth
+```
+
+2. Скопируйте `deepseek-auth.json` на VPS:
+
+```bash
+scp deepseek-auth.json user@your-vps:/opt/FreeDeepseekAPI/deepseek-auth.json
+```
+
+3. На VPS импортируйте/проверьте файл и выставьте безопасные права:
+
+```bash
+cd /opt/FreeDeepseekAPI
+npm run auth:import -- --input ./deepseek-auth.json
+npm run doctor -- --offline
+```
+
+4. Запускайте proxy без интерактивного меню:
+
+```bash
+NON_INTERACTIVE=1 npm start
+```
+
+Можно импортировать не только готовый `deepseek-auth.json`, но и browser cookie export:
+
+```bash
+DEEPSEEK_TOKEN="<token>" npm run auth:import -- --input ./cookies.json
+```
+
+> Важно: `deepseek-auth.json` — это доступ к вашему DeepSeek Web login. Не коммитьте, не публикуйте, храните с правами `0600`.
+
+---
+
+## 🩺 Diagnostics / doctor
+
+```bash
+npm run doctor
+# без сетевых запросов к DeepSeek:
+npm run doctor -- --offline
+```
+
+`doctor` проверяет:
+
+- найден ли `deepseek-auth.json` / `DEEPSEEK_AUTH_DIR`;
+- валидный ли JSON;
+- есть ли `token`, `cookie`, `wasmUrl`;
+- безопасные ли права файла на macOS/Linux (`0600`);
+- при обычном запуске — доступен ли DeepSeek PoW endpoint.
+
+Если видите `data.biz_data is null`, `fetch failed`, `401/403/429` или Hermes/OpenCode не видит модели — первым делом запускайте `npm run doctor`.
+
+---
+
+## ♻️ Session reuse и сброс чатов
+
+FreeDeepseekAPI не создаёт новый DeepSeek чат на каждый HTTP-запрос без причины. Логика такая:
+
+- один `x-agent-session`, `session` или `user` → одна DeepSeek chat session;
+- если session id уже есть — proxy переиспользует его и продолжает chain через `parent_message_id`;
+- auto-reset происходит при TTL, ошибке DeepSeek session или слишком длинной цепочке сообщений;
+- локальная history сохраняется коротким контекстом, чтобы новая DeepSeek session могла продолжить разговор.
+
+Явно задать agent/session:
+
+```bash
+curl -X POST http://localhost:9655/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-agent-session: my-agent" \
+  -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"Привет"}]}'
+```
+
+Посмотреть активные sessions:
+
+```bash
+curl http://localhost:9655/v1/sessions
+```
+
+Сбросить одну session:
+
+```bash
+curl -X POST "http://localhost:9655/reset-session?agent=my-agent"
+```
+
+Сбросить все sessions:
+
+```bash
+curl -X POST "http://localhost:9655/reset-session?agent=all"
+```
+
+Почему чаты всё равно появляются в DeepSeek Web: proxy работает через внутренний Web Chat API, а DeepSeek хранит реальные chat sessions у себя. Это нормально для web-proxy. Задача session reuse — не плодить новые чаты без необходимости и аккуратно сбрасываться только когда chain протух/сломался.
+
+---
+
+## 👥 Multi-account pool
+
+Можно подключить несколько auth-файлов. Правильная модель: sticky account per agent/session — proxy не переключает аккаунт внутри живой DeepSeek-сессии. Если аккаунт получил `401/403/429` и ушёл в cooldown, session безопасно сбрасывается и новый запрос может перейти на другой доступный аккаунт.
+
+Вариант 1 — директория с auth-файлами:
+
+```bash
+mkdir -p accounts
+cp deepseek-auth-main.json accounts/main.json
+cp deepseek-auth-backup.json accounts/backup.json
+chmod 600 accounts/*.json
+DEEPSEEK_AUTH_DIR=./accounts NON_INTERACTIVE=1 npm start
+```
+
+Вариант 2 — список файлов:
+
+```bash
+DEEPSEEK_AUTH_PATH="./accounts/main.json,./accounts/backup.json" NON_INTERACTIVE=1 npm start
+```
+
+Как работает pool:
+
+- новый agent/session получает доступный аккаунт round-robin;
+- выбранный аккаунт закрепляется за session (`sticky`);
+- при `401`, `403`, `429` аккаунт уходит в cooldown;
+- если sticky-аккаунт session ушёл в cooldown, старая DeepSeek-сессия сбрасывается, чтобы не долбить rate-limited/expired аккаунт;
+- статус аккаунтов виден в `/health` без путей к auth-файлам и без имён файлов;
+- auth-файлы должны храниться с правами `0600`.
+
+Настроить cooldown:
+
+```bash
+DEEPSEEK_ACCOUNT_COOLDOWN_MS=600000 npm start
+```
+
+---
+
+## 🔑 Идеи для консольной авторизации
+
+Парольный flow из PR #3 можно делать, но безопаснее не хранить пароль и не делать это дефолтом. Нормальная реализация:
+
+1. `npm run auth:console` спрашивает email/телефон и пароль через hidden prompt.
+2. Пароль держится только в памяти процесса, не пишется в файлы/logs/history.
+3. Скрипт повторяет Web login flow через `fetch`/CDP: получает captcha/verify challenge, отдаёт человеку ссылку/код, ждёт подтверждение.
+4. После успешного login сохраняется только `deepseek-auth.json` стандартного формата.
+5. Если DeepSeek просит captcha/2FA — скрипт честно говорит “открой ссылку, пройди проверку, нажми Enter”, а не пытается обходить защиту.
+6. Для VPS лучше режим `auth:console --no-save-password --output deepseek-auth.json`.
+
+Минимальный безопасный MVP: console auth только интерактивный, без env-пароля. Допустимый automation-вариант: `DEEPSEEK_EMAIL=... npm run auth:console`, но пароль всё равно вводится hidden prompt.
 
 ---
 
