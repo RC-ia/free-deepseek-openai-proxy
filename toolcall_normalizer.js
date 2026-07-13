@@ -54,12 +54,28 @@ function decodeHtmlEntities(s) {
  */
 function coerceToolCallObject(obj) {
   if (!obj || typeof obj !== 'object') return null;
-  const candidate = obj.tool_call || obj.tool || obj.function_call || obj;
-  if (!candidate || typeof candidate !== 'object') return null;
-  const fn = candidate.function && typeof candidate.function === 'object' ? candidate.function : candidate;
-  const name = fn.name || candidate.name || obj.name;
+  // A tool call may be expressed several ways; normalize all to { name, arguments }.
+  // - {"tool_call": {"name": "x", "arguments": {...}}}
+  // - {"function_call": {"name": "x", "arguments": "..."}}
+  // - {"name": "x", "arguments": {...}}            (OpenAI-style)
+  // - {"tool": "x", "arguments": {...}}            (DeepSeek Web line-numbered / compact form)
+  // - {"function": {"name": "x", "arguments": {...}}}
+  const name =
+    (typeof obj.tool === 'string' ? obj.tool : null) ||
+    (obj.tool_call && typeof obj.tool_call === 'object' ? obj.tool_call.name : null) ||
+    (obj.function_call && typeof obj.function_call === 'object' ? obj.function_call.name : null) ||
+    (obj.function && typeof obj.function === 'object' ? obj.function.name : null) ||
+    obj.name ||
+    null;
   if (!name || typeof name !== 'string') return null;
-  let args = fn.arguments ?? candidate.arguments ?? candidate.input ?? obj.arguments ?? obj.input ?? {};
+  const argsSource =
+    obj.arguments ??
+    obj.input ??
+    (obj.tool_call && typeof obj.tool_call === 'object' ? obj.tool_call.arguments ?? obj.tool_call.input : null) ??
+    (obj.function_call && typeof obj.function_call === 'object' ? obj.function_call.arguments ?? obj.function_call.input : null) ??
+    (obj.function && typeof obj.function === 'object' ? obj.function.arguments ?? obj.function.input : null) ??
+    null;
+  let args = argsSource ?? {};
   if (typeof args === 'string') {
     try { args = JSON.parse(args); } catch (e) { args = { raw: args }; }
   }
@@ -212,6 +228,11 @@ function extractBalancedJsonAt(text, startIndex) {
 
 function parseJsonToolCandidate(raw) {
   if (!raw) return null;
+  // Strip line-number prefixes some models emit on EACH line, e.g.:
+  //   "1 {\n 2   \"tool\": \"write_file\"..."
+  // The "N " prefix on every line breaks JSON.parse (error at position 1).
+  let stripped = raw.replace(/^\s*\d+\s+/gm, '').trim();
+  if (stripped !== raw) raw = stripped;
   try {
     const parsed = JSON.parse(raw.trim());
     const tc = coerceToolCallObject(parsed);
@@ -288,16 +309,24 @@ function normalizeToolCall(text) {
   }
 
   // 5) First balanced JSON object
-  for (let i = 0; i < text.length; i++) {
-    if (text[i] !== '{' && text[i] !== '[') continue;
-    const obj = extractBalancedJsonAt(text, i);
-    if (!obj || typeof obj !== 'object') continue;
-    if (obj.tool_call || obj.tool || obj.function_call || obj.name) {
-      const tc = coerceToolCallObject(obj);
-      if (tc) return [tc];
-    }
+  // Strip "N " line-number prefixes models sometimes emit inside the JSON
+  // (e.g. "1 {\n 2   \"tool\": ...") before scanning, so the balanced
+  // extractor doesn't choke on the embedded digits.
+  const scanText = text.replace(/^\s*\d+\s+/gm, '');
+  for (let i = 0; i < scanText.length; i++) {
+    if (scanText[i] !== '{' && scanText[i] !== '[') continue;
+    const found = extractBalancedJsonAt(scanText, i);
+    if (!found) continue;
+    // extractBalancedJsonAt may return a parsed object OR a raw string depending
+    // on branch; handle both.
+    const tc = typeof found === 'string'
+      ? parseJsonToolCandidate(found)
+      : coerceToolCallObject(found);
+    // parseJsonToolCandidate returns an ARRAY; coerceToolCallObject returns an OBJECT.
+    // normalizeToolCall's contract is always an ARRAY, so wrap the object form.
+    const out = (tc && Array.isArray(tc)) ? tc : (tc && tc.name ? [tc] : null);
+    if (out && out.length) return out;
   }
-
   return [];
 }
 

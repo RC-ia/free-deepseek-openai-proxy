@@ -647,24 +647,46 @@ function extractBalancedJsonAt(text, startIndex) {
 }
 
 function coerceToolCallObject(obj) {
-    if (!obj || typeof obj !== 'object') return null;
-    const candidate = obj.tool_call || obj.tool || obj.function_call || obj;
-    if (!candidate || typeof candidate !== 'object') return null;
-    const fn = candidate.function && typeof candidate.function === 'object' ? candidate.function : candidate;
-    const name = fn.name || candidate.name || obj.name;
-    let args = fn.arguments ?? candidate.arguments ?? candidate.input ?? obj.arguments ?? obj.input ?? {};
-    if (!name || typeof name !== 'string') return null;
-    if (typeof args === 'string') {
-        try { args = JSON.parse(args); } catch (e) { args = { raw: args }; }
-    }
-    if (!args || typeof args !== 'object' || Array.isArray(args)) args = { value: args };
-    return { name, arguments: JSON.stringify(args) };
+  if (!obj || typeof obj !== 'object') return null;
+  // A tool call may be expressed several ways; normalize all to { name, arguments }.
+  // - {"tool_call": {"name": "x", "arguments": {...}}}
+  // - {"function_call": {"name": "x", "arguments": "..."}}
+  // - {"name": "x", "arguments": {...}}            (OpenAI-style)
+  // - {"tool": "x", "arguments": {...}}            (DeepSeek Web line-numbered / compact form)
+  // - {"function": {"name": "x", "arguments": {...}}}
+  const name =
+    (typeof obj.tool === 'string' ? obj.tool : null) ||
+    (obj.tool_call && typeof obj.tool_call === 'object' ? obj.tool_call.name : null) ||
+    (obj.function_call && typeof obj.function_call === 'object' ? obj.function_call.name : null) ||
+    (obj.function && typeof obj.function === 'object' ? obj.function.name : null) ||
+    obj.name ||
+    null;
+  if (!name || typeof name !== 'string') return null;
+  const argsSource =
+    obj.arguments ??
+    obj.input ??
+    (obj.tool_call && typeof obj.tool_call === 'object' ? obj.tool_call.arguments ?? obj.tool_call.input : null) ??
+    (obj.function_call && typeof obj.function_call === 'object' ? obj.function_call.arguments ?? obj.function_call.input : null) ??
+    (obj.function && typeof obj.function === 'object' ? obj.function.arguments ?? obj.function.input : null) ??
+    null;
+  let args = argsSource ?? {};
+  if (typeof args === 'string') {
+    try { args = JSON.parse(args); } catch (e) { args = { raw: args }; }
+  }
+  if (!args || typeof args !== 'object' || Array.isArray(args)) args = { value: args };
+  return { name, arguments: JSON.stringify(args) };
 }
 
 function parseJsonToolCandidate(raw, label = 'json') {
-    if (!raw) return null;
-    try {
-        const parsed = JSON.parse(raw);
+  if (!raw) return null;
+  // Strip line-number prefixes some models emit, e.g.:
+  //   "1 {\n 2   \"tool\": \"write_file\"..."
+  // The "N " prefix on EACH line breaks JSON.parse (error at position 1).
+  // Remove a leading "<digits><space>" from every line, not just the first.
+  let stripped = raw.replace(/^\s*\d+\s+/gm, '').trim();
+  if (stripped !== raw) raw = stripped;
+  try {
+    const parsed = JSON.parse(raw);
         const tc = coerceToolCallObject(parsed);
         if (tc) {
             console.log(`[parseToolCall] SUCCESS ${label}: ${tc.name} (args=${tc.arguments.length} chars)`);

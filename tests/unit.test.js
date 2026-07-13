@@ -362,3 +362,33 @@ test('every model exposes a context_window derived from the chat char limit', ()
   }
 });
 
+// Regression: DeepSeek sometimes emits a tool call with key "tool" (not "name")
+// AND line-number prefixes on every line. Both the server parser and the vendored
+// normalizer must recover the call.
+const LINE_PREFIXED_TOOL = `Now creating the file.
+
+     1 {
+     2   "tool": "write_file",
+     3   "arguments": {
+     4     "file_path": "/home/user/app.js",
+     5     "content": "const x = 1;"
+     6   }
+     7 }`;
+
+test('parseToolCall recovers "tool" key + line-number prefix', () => {
+  const tc = parseToolCall(LINE_PREFIXED_TOOL);
+  assert.ok(tc, 'should recover a tool call');
+  assert.equal(tc.name, 'write_file');
+  const args = JSON.parse(tc.arguments);
+  assert.equal(args.file_path, '/home/user/app.js');
+});
+
+test('normalizeToolCall recovers "tool" key + line-number prefix', () => {
+  const result = normalizeToolCall(LINE_PREFIXED_TOOL);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].name, 'write_file');
+  const args = JSON.parse(result[0].arguments);
+  assert.equal(args.file_path, '/home/user/app.js');
+});
+
+
