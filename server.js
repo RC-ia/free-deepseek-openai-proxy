@@ -693,7 +693,7 @@ function parseJsonToolCandidate(raw, label = 'json') {
             return tc;
         }
     } catch (e) {
-        console.log(`[parseToolCall] ${label} JSON.parse failed: ${e.message.substring(0, 100)} | fragment=${JSON.stringify(raw.slice(0, 300))}`);
+      // Silent: a non-tool JSON fragment is expected noise, not an error.
     }
     return null;
 }
@@ -765,23 +765,11 @@ function parseToolCall(text) {
         if (!rawJson) continue;
         const tc = parseJsonToolCandidate(rawJson, 'inline');
         if (tc) return tc;
-        // DIAGNOSTIC: log the failing JSON fragment so we can see exactly what
-        // shape the model emitted that our parser rejected (e.g. a wrapper we don't
-        // yet handle). Truncated to avoid flooding the log.
-        if (i === firstBraceIndex(text)) {
-            console.log(`[parseToolCall] inline JSON.parse rejected fragment (first { at ${i}): ${JSON.stringify(rawJson.slice(0, 400))}`);
-        }
     }
 
-    // DIAGNOSTIC: no tool call recognized. If the text LOOKS like it should have
-    // contained one (has a brace, XML tag, or TOOL_CALL marker), dump a raw
-    // sample so the format that slipped through can be captured and fixed.
-    const looksLikeToolCall = /[{}]|<tool|<function|TOOL_CALL:|tool_call/i.test(text);
-    if (looksLikeToolCall) {
-        console.log(`[parseToolCall] No tool call match in ${text.length} chars — RAW SAMPLE (first 800): ${JSON.stringify(text.slice(0, 800))}`);
-    } else {
-        console.log(`[parseToolCall] No tool call match in ${text.length} chars`);
-    }
+    // No tool call recognized. Do NOT log the raw content (floods the log with
+    // legitimate code/text that merely contains braces). The caller will send
+    // the text as-is to the client.
     return null;
 }
 
@@ -1692,32 +1680,11 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
 
-            // Retry if TOOL_CALL was found but JSON was truncated/invalid
-            if (!toolCall && /TOOL_CALL:\s*\w/i.test(fullContent)) {
-                console.log(`${agentTag} TOOL_CALL detected but JSON invalid/truncated (${fullContent.length} chars). Retrying with stricter prompt...`);
-                session.id = null;
-                session.parentMessageId = null;
-                session.createdAt = null;
-                session.messageCount = 0;
-                await new Promise(r => setTimeout(r, 1000));
-                const strictPrompt = fullPrompt + '\n\n[STRICT INSTRUCTION] Your previous response had a TOOL_CALL but the arguments were too long and got cut off. Keep the arguments SHORT — no large file contents. Just use a minimal example or reference the file by name. Output ONLY: TOOL_CALL: <function>\narguments: <short JSON>';
-                const { resp: retryResp2 } = await askDeepSeekStream(strictPrompt, agentId, requestedModel);
-                const retryResult2 = await readDeepSeekResponse(retryResp2.body);
-                const retryContent2 = retryResult2 && retryResult2.content ? sanitizeContent(retryResult2.content) : '';
-                if (retryContent2 && retryContent2.trim()) {
-                    const retryTc = parseToolCall(retryContent2);
-                    if (retryTc) {
-                        console.log(`${agentTag} Retry with strict prompt succeeded: ${retryTc.name}`);
-                        fullContent = retryContent2;
-                        reasoningContent = retryResult2.reasoningContent ? sanitizeContent(retryResult2.reasoningContent) : '';
-                        toolCall = retryTc;
-                    } else {
-                        console.log(`${agentTag} Retry still has broken JSON. Sending as text.`);
-                        reasoningContent = retryResult2.reasoningContent ? sanitizeContent(retryResult2.reasoningContent) : reasoningContent;
-                    }
-                }
-            }
-            
+            // If the model returned ONLY a context-compaction notice (not a tool call,
+            // not a real answer), the 413 branch above already returned. Here, if we
+            // reach this point, the reply is real content (or non-compaction text):
+            // send it as text when there is no valid tool call.
+
             // Check if any tool results in the current conversation contained a screenshot path.
             // If so, and the response doesn't already have MEDIA:, inject it so the gateway
             // delivers the file to Telegram.
