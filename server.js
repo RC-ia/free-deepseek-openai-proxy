@@ -773,25 +773,6 @@ function parseToolCall(text) {
     return null;
 }
 
-// Heuristic: detect a response that is ONLY a context-compaction notice from
-// DeepSeek (e.g. "Context near hard limit — auto-compact will force on next
-// send"), not a real answer and not a tool call. When this fires we must NOT
-// feed it back as content or try to parse a tool call — instead the caller
-// returns HTTP 413 so the client compresses and retries with a smaller prompt.
-const COMPACTION_MARKERS = [
-    'context', 'compact', 'auto-compact', 'auto-compact',
-    'too large', 'too long', 'hard limit', 'compress',
-    'truncat', 'exceed', 'context window', 'context is',
-];
-function isContextCompactionResponse(text) {
-    if (!text || typeof text !== 'string') return false;
-    const lower = text.toLowerCase();
-    if (lower.length > 600) return false; // real answers are longer
-    let hits = 0;
-    for (const m of COMPACTION_MARKERS) if (lower.includes(m)) hits++;
-    return hits >= 2;
-}
-
 // Returns the index of the first '{' in text, or -1.
 function firstBraceIndex(text) {
     return text.indexOf('{');
@@ -1657,33 +1638,11 @@ const server = http.createServer(async (req, res) => {
 
             let toolCall = parseToolCall(fullContent);
 
-            // If the model returned ONLY a context-compaction notice (not a tool call,
-            // not a real answer), DO NOT feed it back or try to parse a tool call.
-            // Surface HTTP 413 so the client compresses and retries with a smaller
-            // prompt (same signal as the pre-send 413). This is what the user asked
-            // for: the proxy must ignore DeepSeek's compaction text, not normalize it.
-            if (!toolCall && isContextCompactionResponse(fullContent)) {
-                console.log(`${agentTag} response is a context-compaction notice (${fullContent.length} chars) — returning 413 so client compresses`);
-                const usage = buildUsage(fullPrompt, '', '');
-                res.writeHead(413, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({
-                    error: {
-                        message: `Context window exceeded: DeepSeek returned a compaction notice instead of an answer (prompt was ~${fullPrompt.length} chars, limit ~${DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT}). Compress your conversation history / attachments and retry.`,
-                        type: 'context_length_exceeded',
-                        context_char_limit: DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT,
-                        prompt_chars: fullPrompt.length,
-                        prompt_tokens_est: Math.ceil(fullPrompt.length / 4),
-                        context_usage_ratio: Number((fullPrompt.length / DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT).toFixed(4)),
-                        usage,
-                    }
-                }));
-                return;
-            }
-
-            // If the model returned ONLY a context-compaction notice (not a tool call,
-            // not a real answer), the 413 branch above already returned. Here, if we
-            // reach this point, the reply is real content (or non-compaction text):
-            // send it as text when there is no valid tool call.
+            // No compaction-413 here on purpose: returning 413 on a *reply* makes
+            // the client compress AGAIN and re-send, causing an infinite
+            // compress->413->compress regression loop. A compaction notice from the
+            // model is just text — if it isn't a valid tool call, send it as text
+            // (the client reads it and moves on, exactly like any other reply).
 
             // Check if any tool results in the current conversation contained a screenshot path.
             // If so, and the response doesn't already have MEDIA:, inject it so the gateway
@@ -1824,7 +1783,6 @@ module.exports = {
         _setAccountsForTest: (arr) => { accounts.length = 0; for (const a of arr) accounts.push(a); },
         _resetRoundRobin: () => { accountRoundRobin = 0; },
         buildUsage,
-        isContextCompactionResponse,
         CONTEXT: {
             limit: DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT,
             effectiveLimit: DEEPSEEK_CHAT_CONTEXT_EFFECTIVE_LIMIT,
