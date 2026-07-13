@@ -671,7 +671,7 @@ function parseJsonToolCandidate(raw, label = 'json') {
             return tc;
         }
     } catch (e) {
-        console.log(`[parseToolCall] ${label} JSON.parse failed: ${e.message.substring(0, 100)}`);
+        console.log(`[parseToolCall] ${label} JSON.parse failed: ${e.message.substring(0, 100)} | fragment=${JSON.stringify(raw.slice(0, 300))}`);
     }
     return null;
 }
@@ -743,10 +743,29 @@ function parseToolCall(text) {
         if (!rawJson) continue;
         const tc = parseJsonToolCandidate(rawJson, 'inline');
         if (tc) return tc;
+        // DIAGNOSTIC: log the failing JSON fragment so we can see exactly what
+        // shape the model emitted that our parser rejected (e.g. a wrapper we don't
+        // yet handle). Truncated to avoid flooding the log.
+        if (i === firstBraceIndex(text)) {
+            console.log(`[parseToolCall] inline JSON.parse rejected fragment (first { at ${i}): ${JSON.stringify(rawJson.slice(0, 400))}`);
+        }
     }
 
-    console.log(`[parseToolCall] No tool call match in ${text.length} chars`);
+    // DIAGNOSTIC: no tool call recognized. If the text LOOKS like it should have
+    // contained one (has a brace, XML tag, or TOOL_CALL marker), dump a raw
+    // sample so the format that slipped through can be captured and fixed.
+    const looksLikeToolCall = /[{}]|<tool|<function|TOOL_CALL:|tool_call/i.test(text);
+    if (looksLikeToolCall) {
+        console.log(`[parseToolCall] No tool call match in ${text.length} chars — RAW SAMPLE (first 800): ${JSON.stringify(text.slice(0, 800))}`);
+    } else {
+        console.log(`[parseToolCall] No tool call match in ${text.length} chars`);
+    }
     return null;
+}
+
+// Returns the index of the first '{' in text, or -1.
+function firstBraceIndex(text) {
+    return text.indexOf('{');
 }
 
 /**
