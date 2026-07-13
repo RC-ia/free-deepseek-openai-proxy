@@ -102,12 +102,30 @@ function parseNativeXmlSingular(tag) {
   if (!name) return null;
 
   const args = {};
-  const paramRe = /<parameter\s+name\s*=\s*["']([^"']+)["']\s*>([\s\S]*?)<\/parameter>/gi;
+  // NOTE: tolerate extra attributes on <parameter> (e.g. type="array"), and
+  // capture the value non-greedily up to the matching </parameter>.
+  const paramRe = /<parameter\s+name\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/parameter>/gi;
   let m;
   let found = false;
   while ((m = paramRe.exec(tag)) !== null) {
     found = true;
     args[m[1]] = parseParameterValue(m[2]);
+  }
+
+  if (!found) {
+    // No <parameter> children: the tool-call body may be inline JSON, e.g.
+    //   <tool_call name="x">{"todos":[...]}</tool_call>
+    const body = tag
+      .replace(/^<tool_call[^>]*>/i, '')
+      .replace(/<\/tool_call>\s*$/i, '')
+      .trim();
+    if (body) {
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed && typeof parsed === 'object') return { name, arguments: parsed };
+      } catch (e) { /* not JSON; fall through below */ }
+    }
+    return { name, arguments: {} };
   }
 
   // Single generic param whose value is already an object/array -> promote.
@@ -120,7 +138,7 @@ function parseNativeXmlSingular(tag) {
     }
   }
 
-  return { name, arguments: found ? args : {} };
+  return { name, arguments: args };
 }
 
 /** Parse the plural native shape: <tool_calls><function ...>...</function></tool_calls> */

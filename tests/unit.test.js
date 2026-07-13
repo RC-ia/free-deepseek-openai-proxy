@@ -208,3 +208,67 @@ test('parseToolCall returns first call from plural <tool_calls> block', () => {
   const args = JSON.parse(tc.arguments);
   assert.equal(args.file_path, '/a.txt');
 });
+
+// Regression: DeepSeek Web emits <parameter name="todos" type="array"> with an
+// extra type attribute — the normalizer must still extract the array (Qwen
+// Code's TodoWrite/TodoList requires `todos` to be an array, not empty).
+test('normalizeToolCall tolerates extra type attr on <parameter> and yields array', () => {
+  const text = `<tool_call name="todo_write">
+    <parameter name="todos" type="array">[{"id":"1","content":"Criar HTML base","status":"in_progress"},{"id":"2","content":"CSS","status":"pending"}]</parameter>
+  </tool_call>`;
+  const calls = normalizeToolCall(text);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'todo_write');
+  const args = calls[0].arguments;
+  assert.ok(Array.isArray(args.todos), 'todos must be an array');
+  assert.equal(args.todos.length, 2);
+  assert.equal(args.todos[0].status, 'in_progress');
+});
+
+// Regression: tool-call body as inline JSON (no <parameter> children) must
+// also be parsed, not returned as empty args.
+test('normalizeToolCall handles inline-JSON tool-call body', () => {
+  const text = `<tool_call name="todo_write">{"todos":[{"id":"1","content":"X","status":"in_progress"}]}</tool_call>`;
+  const calls = normalizeToolCall(text);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'todo_write');
+  const args = calls[0].arguments;
+  assert.ok(Array.isArray(args.todos), 'todos must be an array');
+  assert.equal(args.todos.length, 1);
+});
+
+// Regression: with >1 ready account, every request must rotate to a DIFFERENT
+// account (round-robin) to dilute per-account traffic and reduce ban risk, and
+// reset the web session when the account changes.
+test('selectAccountForSession round-robins across multiple ready accounts', () => {
+  const mk = (id) => ({ id, config: { token: 't', cookie: 'c' }, cooldownUntil: 0, failures: 0, lastUsedAt: 0 });
+  serverInternals._setAccountsForTest([mk('account_1'), mk('account_2')]);
+  serverInternals._resetRoundRobin();
+  const session = { id: 'sess-x', parentMessageId: 'p', createdAt: Date.now(), messageCount: 3 };
+
+  const seen = [];
+  let allDifferent = true;
+  for (let i = 0; i < 4; i++) {
+    const acct = serverInternals.selectAccountForSession(session);
+    seen.push(acct.id);
+    if (i > 0 && seen[i] === seen[i - 1]) allDifferent = false;
+  }
+  assert.deepEqual(seen, ['account_1', 'account_2', 'account_1', 'account_2']);
+  assert.equal(allDifferent, true, 'each request must hit a different account');
+  serverInternals._setAccountsForTest([]);
+});
+
+// Regression: with a single account, selection stays sticky (no rotation, no reset).
+test('selectAccountForSession stays sticky with a single account', () => {
+  const mk = (id) => ({ id, config: { token: 't', cookie: 'c' }, cooldownUntil: 0, failures: 0, lastUsedAt: 0 });
+  serverInternals._setAccountsForTest([mk('account_1')]);
+  serverInternals._resetRoundRobin();
+  const session = { id: 'sess-y', parentMessageId: 'p', createdAt: Date.now(), messageCount: 3 };
+  const a = serverInternals.selectAccountForSession(session);
+  const b = serverInternals.selectAccountForSession(session);
+  assert.equal(a.id, 'account_1');
+  assert.equal(b.id, 'account_1');
+  assert.equal(session.id, 'sess-y', 'session must not be reset with a single account');
+  serverInternals._setAccountsForTest([]);
+});
+

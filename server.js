@@ -165,20 +165,6 @@ function accountStatus(account) {
 }
 function selectAccountForSession(session) {
     const now = Date.now();
-    if (session.accountId) {
-        const sticky = accounts.find(a => a.id === session.accountId);
-        if (sticky && sticky.config.token && sticky.config.cookie && sticky.cooldownUntil <= now) return sticky;
-        if (sticky && sticky.cooldownUntil > now) {
-            // A DeepSeek chat_session belongs to the auth account that created it.
-            // If that account is rate-limited/expired, do not keep hammering it;
-            // reset the web session and let a healthy account take over.
-            session.id = null;
-            session.parentMessageId = null;
-            session.createdAt = null;
-            session.messageCount = 0;
-        }
-        session.accountId = null;
-    }
     const ready = accounts.filter(a => a.config.token && a.config.cookie && a.cooldownUntil <= now);
     if (ready.length === 0) {
         const waiting = accounts.filter(a => a.config.token && a.config.cookie).sort((a, b) => a.cooldownUntil - b.cooldownUntil)[0];
@@ -188,8 +174,28 @@ function selectAccountForSession(session) {
         }
         throw new Error('No valid DeepSeek auth accounts. Run npm run auth or npm run auth:import.');
     }
+
+    // SINGLE ACCOUNT: keep the existing sticky behavior (no need to rotate).
+    if (ready.length === 1) {
+        const account = ready[0];
+        session.accountId = account.id;
+        return account;
+    }
+
+    // MULTI-ACCOUNT: distribute every request across accounts (round-robin) so
+    // no single account absorbs all traffic (reduces per-account ban/rate-limit
+    // risk). A DeepSeek chat_session belongs to the account that created it, so
+    // when we move to a different account we reset the web session and let the
+    // new account create its own. Conversation context is preserved because the
+    // full message history is re-sent in the request payload.
     const account = ready[accountRoundRobin % ready.length];
     accountRoundRobin++;
+    if (session.accountId && session.accountId !== account.id) {
+        session.id = null;
+        session.parentMessageId = null;
+        session.createdAt = null;
+        session.messageCount = 0;
+    }
     session.accountId = account.id;
     return account;
 }
@@ -1695,6 +1701,8 @@ module.exports = {
         markAccountEmptyFailure,
         getAccounts: () => accounts,
         resetAccounts: () => { accounts.length = 0; },
+        _setAccountsForTest: (arr) => { accounts.length = 0; for (const a of arr) accounts.push(a); },
+        _resetRoundRobin: () => { accountRoundRobin = 0; },
     },
     parseToolCall,
     toolcallNormalizer: normalizeToolCall ? require('./toolcall_normalizer.js') : null,
