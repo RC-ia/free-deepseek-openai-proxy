@@ -817,7 +817,11 @@ function buildUsage(prompt, content, reasoningContent = '') {
         }
     };
     // Context-window visibility: tell the client how much of the chat limit is
-    // used so IT can decide how to compress (proxy does not auto-truncate).
+    // used (chars) AND the hard token cap, so IT can decide how to compress
+    // (proxy does not auto-truncate). context_window is the real DeepSeek Web
+    // chat cap (~40k tokens); clients that hardcoded 1M learn the truth here.
+    usage.context_window = DEEPSEEK_CONTEXT_WINDOW_TOKENS;
+    usage.max_context_length = DEEPSEEK_CONTEXT_WINDOW_TOKENS;
     usage.context_char_limit = DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT;
     usage.prompt_chars = promptChars;
     usage.prompt_tokens_est = promptTokens;
@@ -1270,9 +1274,22 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Models: OpenAI-compatible list exposes only aliases verified to work through this proxy.
+    // Expose context_window (and common synonyms) so clients that hardcode a wrong
+    // limit (e.g. assume 1M) actually learn the real ~40k-token chat cap and
+    // stop overflowing before the DeepSeek Web chat silently returns empty.
     if (req.method === 'GET' && url.pathname === '/v1/models') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ object: 'list', data: SUPPORTED_MODEL_IDS.map(id => ({ id, object: 'model', created: 1700000000, owned_by: 'deepseek-web', real_model: MODEL_CONFIGS[id].real_model, context_window: MODEL_CONFIGS[id].context_window, capabilities: MODEL_CONFIGS[id].capabilities })) }));
+        res.end(JSON.stringify({ object: 'list', data: SUPPORTED_MODEL_IDS.map(id => {
+            const cw = MODEL_CONFIGS[id].context_window;
+            return {
+                id, object: 'model', created: 1700000000, owned_by: 'deepseek-web',
+                real_model: MODEL_CONFIGS[id].real_model,
+                context_window: cw,
+                max_context_length: cw,
+                token_limit: cw,
+                capabilities: MODEL_CONFIGS[id].capabilities,
+            };
+        }) }));
         return;
     }
 
