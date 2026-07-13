@@ -331,3 +331,25 @@ test('selectAccountForSession stays sticky with a single account', () => {
   serverInternals._setAccountsForTest([]);
 });
 
+// Regression: buildUsage must surface chat context limit + usage ratio so the
+// client (e.g. Qwen Code) can compress its own context instead of getting a
+// silent empty response from the DeepSeek Web chat.
+test('buildUsage reports context char limit and usage ratio', () => {
+  const longPrompt = 'x'.repeat(162131); // exactly the measured chat limit
+  const usage = serverInternals.buildUsage(longPrompt, 'hello', '');
+  assert.equal(usage.context_char_limit, 162131);
+  assert.equal(usage.prompt_chars, 162131);
+  assert.equal(typeof usage.context_usage_ratio, 'number');
+  assert.ok(usage.context_usage_ratio >= 0.99 && usage.context_usage_ratio <= 1.01, 'ratio should be ~1.0 at the limit');
+  // prompt_tokens_est is chars/4
+  assert.equal(usage.prompt_tokens_est, Math.ceil(162131 / 4));
+});
+
+// Regression: CONTEXT limit constants are exported and effective limit applies margin.
+test('CONTEXT effective limit applies safety margin', () => {
+  const { limit, effectiveLimit } = serverInternals.CONTEXT;
+  assert.equal(limit, 162131);
+  assert.ok(effectiveLimit < limit, 'effective limit must be below raw limit (safety margin)');
+  assert.ok(effectiveLimit >= limit * 0.9, 'margin must not be too aggressive (<10%)');
+});
+

@@ -73,6 +73,13 @@ const SESSION_TTL_MS = 2 * 60 * 60 * 1000;  // 2 hours
 const DS_CONFIG_PATH = process.env.DEEPSEEK_AUTH_PATH || path.join(__dirname, 'deepseek-auth.json');
 const ACCOUNTS_DIR = process.env.DEEPSEEK_AUTH_DIR || path.join(__dirname, 'accounts');
 const DEFAULT_ACCOUNT_COOLDOWN_MS = Number(process.env.DEEPSEEK_ACCOUNT_COOLDOWN_MS || 10 * 60 * 1000);
+// Theoretical context character limit of the DeepSeek Web chat (measured:
+// ~162131 chars). The proxy mirrors the chat, so this is the effective cap on
+// the prompt we can send. Leave a safety margin so we reject BEFORE the server
+// silently returns an empty response.
+const DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT = Number(process.env.DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT || 162131);
+const DEEPSEEK_CONTEXT_SAFETY_MARGIN = Number(process.env.DEEPSEEK_CONTEXT_SAFETY_MARGIN || 0.95);
+const DEEPSEEK_CHAT_CONTEXT_EFFECTIVE_LIMIT = Math.floor(DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT * DEEPSEEK_CONTEXT_SAFETY_MARGIN);
 let DS_CONFIG = {};
 let dsHeaders = {};
 const accounts = [];
@@ -744,11 +751,12 @@ function estimateTokens(text) {
 }
 
 function buildUsage(prompt, content, reasoningContent = '') {
+    const promptChars = prompt ? prompt.length : 0;
     const promptTokens = estimateTokens(prompt);
     const contentTokens = estimateTokens(content);
     const reasoningTokens = estimateTokens(reasoningContent);
     const completionTokens = contentTokens + reasoningTokens;
-    return {
+    const usage = {
         prompt_tokens: promptTokens,
         completion_tokens: completionTokens,
         total_tokens: promptTokens + completionTokens,
@@ -756,6 +764,15 @@ function buildUsage(prompt, content, reasoningContent = '') {
             reasoning_tokens: reasoningTokens
         }
     };
+    // Context-window visibility: tell the client how much of the chat limit is
+    // used so IT can decide how to compress (proxy does not auto-truncate).
+    usage.context_char_limit = DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT;
+    usage.prompt_chars = promptChars;
+    usage.prompt_tokens_est = promptTokens;
+    usage.context_usage_ratio = DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT > 0
+        ? Number((promptChars / DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT).toFixed(4))
+        : null;
+    return usage;
 }
 
 function buildToolCallResponse(toolCall, model = 'deepseek-default', prompt = '', reasoningContent = '') {
@@ -1353,6 +1370,31 @@ const server = http.createServer(async (req, res) => {
             const promptEstTokens = Math.ceil(promptChars / 4);
             console.log(`${agentTag} >>> sending prompt to DeepSeek: ~${promptChars} chars (~${promptEstTokens} tokens est.) | session.msgs=${session.history.length} | model=${requestedModel}`);
 
+            // Reject BEFORE sending if the prompt exceeds the chat context limit.
+            // The DeepSeek Web chat caps input at ~DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT
+            // chars; over that it returns an empty response (0 chars) instead of an
+            // error. Surface a 413 with usage info so the client can compress its
+            // own context however it wants (proxy does not auto-truncate).
+            if (promptChars > DEEPSEEK_CHAT_CONTEXT_EFFECTIVE_LIMIT) {
+                const overBy = promptChars - DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT;
+                const ratio = Number((promptChars / DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT).toFixed(4));
+                const usage = buildUsage(fullPrompt, '', '');
+                console.log(`${agentTag} prompt ${promptChars} chars exceeds chat context limit ${DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT} (effective ${DEEPSEEK_CHAT_CONTEXT_EFFECTIVE_LIMIT}) — returning 413`);
+                res.writeHead(413, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    error: {
+                        message: `Context window exceeded: prompt is ${promptChars} chars but the DeepSeek Web chat limit is ~${DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT} chars (you are over by ~${overBy} chars, ${ratio * 100}% of limit). Compress your conversation history / attachments before retrying.`,
+                        type: 'context_length_exceeded',
+                        context_char_limit: DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT,
+                        prompt_chars: promptChars,
+                        prompt_tokens_est: promptEstTokens,
+                        context_usage_ratio: ratio,
+                        usage
+                    }
+                }));
+                return;
+            }
+
             const startTime = Date.now();
             const { resp: dsResp } = await askDeepSeekStream(fullPrompt, agentId, requestedModel);
 
@@ -1703,6 +1745,11 @@ module.exports = {
         resetAccounts: () => { accounts.length = 0; },
         _setAccountsForTest: (arr) => { accounts.length = 0; for (const a of arr) accounts.push(a); },
         _resetRoundRobin: () => { accountRoundRobin = 0; },
+        buildUsage,
+        CONTEXT: {
+            limit: DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT,
+            effectiveLimit: DEEPSEEK_CHAT_CONTEXT_EFFECTIVE_LIMIT,
+        },
     },
     parseToolCall,
     toolcallNormalizer: normalizeToolCall ? require('./toolcall_normalizer.js') : null,
