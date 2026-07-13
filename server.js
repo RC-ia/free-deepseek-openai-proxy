@@ -71,6 +71,7 @@ const SESSION_TTL_MS = 2 * 60 * 60 * 1000;  // 2 hours
 
 // === DeepSeek Web API Config — loaded from external config file ===
 const DS_CONFIG_PATH = process.env.DEEPSEEK_AUTH_PATH || path.join(__dirname, 'deepseek-auth.json');
+const ACCOUNTS_DIR = process.env.DEEPSEEK_AUTH_DIR || path.join(__dirname, 'accounts');
 const DEFAULT_ACCOUNT_COOLDOWN_MS = Number(process.env.DEEPSEEK_ACCOUNT_COOLDOWN_MS || 10 * 60 * 1000);
 let DS_CONFIG = {};
 let dsHeaders = {};
@@ -107,6 +108,22 @@ function discoverAuthPaths() {
     }
     if (process.env.DEEPSEEK_AUTH_PATH && process.env.DEEPSEEK_AUTH_PATH.includes(',')) {
         return process.env.DEEPSEEK_AUTH_PATH.split(',').map(s => s.trim()).filter(Boolean);
+    }
+    // Auto-detect the accounts/ folder when no single deepseek-auth.json exists.
+    // This lets multi-account work without manually setting DEEPSEEK_AUTH_DIR.
+    if (!fs.existsSync(DS_CONFIG_PATH) && fs.existsSync(ACCOUNTS_DIR)) {
+        try {
+            const found = fs.readdirSync(ACCOUNTS_DIR)
+                .filter(f => f.endsWith('.json'))
+                .sort()
+                .map(f => path.join(ACCOUNTS_DIR, f));
+            if (found.length > 0) {
+                console.log(`[DS-API] No ${DS_CONFIG_PATH} found — auto-using accounts/ folder (${found.length} account(s)).`);
+                return found;
+            }
+        } catch (e) {
+            console.error(`[DS-API] Could not read accounts dir: ${e.message}`);
+        }
     }
     return [DS_CONFIG_PATH];
 }
@@ -1565,7 +1582,12 @@ async function runAuthScript() {
 function printStatus() {
     console.log(`\n${formatWatermark()}`);
     console.log(`Auth: ${hasAuthConfig() ? '✅ OK' : '❌ deepseek-auth.json not found'}`);
-    console.log(`Auth source: ${process.env.DEEPSEEK_AUTH_DIR || DS_CONFIG_PATH}`);
+    const authSource = process.env.DEEPSEEK_AUTH_DIR
+        ? `DEEPSEEK_AUTH_DIR (${process.env.DEEPSEEK_AUTH_DIR})`
+        : (accounts.length > 1 || (!fs.existsSync(DS_CONFIG_PATH) && fs.existsSync(ACCOUNTS_DIR))
+            ? `accounts/ folder (auto-detected)`
+            : DS_CONFIG_PATH);
+    console.log(`Auth source: ${authSource}`);
     console.log(`Accounts: ${accounts.length ? accounts.map(a => `${a.id}${a.cooldownUntil > Date.now() ? ' (cooldown)' : ''}`).join(', ') : 'none'}`);
     console.log(`Working models: ${SUPPORTED_MODEL_IDS.join(', ')}`);
     console.log('Unsupported/hidden aliases: ' + Object.keys(MODEL_CONFIGS).filter(id => !MODEL_CONFIGS[id].supported).join(', '));
