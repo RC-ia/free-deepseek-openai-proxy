@@ -785,6 +785,25 @@ function parseToolCall(text) {
     return null;
 }
 
+// Heuristic: detect a response that is ONLY a context-compaction notice from
+// DeepSeek (e.g. "Context near hard limit — auto-compact will force on next
+// send"), not a real answer and not a tool call. When this fires we must NOT
+// feed it back as content or try to parse a tool call — instead the caller
+// returns HTTP 413 so the client compresses and retries with a smaller prompt.
+const COMPACTION_MARKERS = [
+    'context', 'compact', 'auto-compact', 'auto-compact',
+    'too large', 'too long', 'hard limit', 'compress',
+    'truncat', 'exceed', 'context window', 'context is',
+];
+function isContextCompactionResponse(text) {
+    if (!text || typeof text !== 'string') return false;
+    const lower = text.toLowerCase();
+    if (lower.length > 600) return false; // real answers are longer
+    let hits = 0;
+    for (const m of COMPACTION_MARKERS) if (lower.includes(m)) hits++;
+    return hits >= 2;
+}
+
 // Returns the index of the first '{' in text, or -1.
 function firstBraceIndex(text) {
     return text.indexOf('{');
@@ -1649,7 +1668,30 @@ const server = http.createServer(async (req, res) => {
             }
 
             let toolCall = parseToolCall(fullContent);
-            
+
+            // If the model returned ONLY a context-compaction notice (not a tool call,
+            // not a real answer), DO NOT feed it back or try to parse a tool call.
+            // Surface HTTP 413 so the client compresses and retries with a smaller
+            // prompt (same signal as the pre-send 413). This is what the user asked
+            // for: the proxy must ignore DeepSeek's compaction text, not normalize it.
+            if (!toolCall && isContextCompactionResponse(fullContent)) {
+                console.log(`${agentTag} response is a context-compaction notice (${fullContent.length} chars) — returning 413 so client compresses`);
+                const usage = buildUsage(fullPrompt, '', '');
+                res.writeHead(413, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    error: {
+                        message: `Context window exceeded: DeepSeek returned a compaction notice instead of an answer (prompt was ~${fullPrompt.length} chars, limit ~${DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT}). Compress your conversation history / attachments and retry.`,
+                        type: 'context_length_exceeded',
+                        context_char_limit: DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT,
+                        prompt_chars: fullPrompt.length,
+                        prompt_tokens_est: Math.ceil(fullPrompt.length / 4),
+                        context_usage_ratio: Number((fullPrompt.length / DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT).toFixed(4)),
+                        usage,
+                    }
+                }));
+                return;
+            }
+
             // Retry if TOOL_CALL was found but JSON was truncated/invalid
             if (!toolCall && /TOOL_CALL:\s*\w/i.test(fullContent)) {
                 console.log(`${agentTag} TOOL_CALL detected but JSON invalid/truncated (${fullContent.length} chars). Retrying with stricter prompt...`);
@@ -1815,6 +1857,7 @@ module.exports = {
         _setAccountsForTest: (arr) => { accounts.length = 0; for (const a of arr) accounts.push(a); },
         _resetRoundRobin: () => { accountRoundRobin = 0; },
         buildUsage,
+        isContextCompactionResponse,
         CONTEXT: {
             limit: DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT,
             effectiveLimit: DEEPSEEK_CHAT_CONTEXT_EFFECTIVE_LIMIT,

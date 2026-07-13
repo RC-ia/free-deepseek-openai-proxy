@@ -391,4 +391,37 @@ test('normalizeToolCall recovers "tool" key + line-number prefix', () => {
   assert.equal(args.file_path, '/home/user/app.js');
 });
 
+// Regression: a context-compaction notice from DeepSeek must NOT be treated as
+// a tool call / answer. isContextCompactionResponse flags it so the handler can
+// return 413 and let the client compress instead of normalizing garbage.
+test('isContextCompactionResponse detects compaction notices', () => {
+  assert.equal(
+    serverInternals.isContextCompactionResponse(
+      'Context near hard limit — auto-compact will force on next send. Consider /clear.'
+    ),
+    true,
+    'should flag a clear compaction notice'
+  );
+  assert.equal(
+    serverInternals.isContextCompactionResponse(
+      'Here is the code you asked for:\n```js\nconst x = 1;\n```'
+    ),
+    false,
+    'should NOT flag a real answer with code'
+  );
+  assert.equal(
+    serverInternals.isContextCompactionResponse(
+      'The context window is exceeded and too large to send safely; compress it.'
+    ),
+    true,
+    'should flag compaction phrasing with multiple markers'
+  );
+  // Long real answers must never be flagged even if they mention context.
+  assert.equal(
+    serverInternals.isContextCompactionResponse('x'.repeat(700) + ' context window'),
+    false,
+    'long text must not be flagged'
+  );
+});
+
 
