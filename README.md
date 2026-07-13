@@ -77,6 +77,9 @@ How it behaves:
 - New agent/sessions get an available account **round-robin**.
 - The chosen account is **sticky** to the session (no mid-conversation switching).
 - On `401` / `403` / `429` the account enters **cooldown**; the next request routes to another healthy account.
+- **Empty responses are now treated as account failures too.** DeepSeek Web sometimes returns HTTP 200 with zero content (rate limit / silent throttle / "verify you are human"). Previously that kept retrying the *same* account forever. Now consecutive empty responses mark the account as failed and fail over to the next one. Tunables:
+  - `DEEPSEEK_EMPTY_FAILURE_LIMIT` (default `2`) — empty responses before an account cools down.
+  - `DEEPSEEK_EMPTY_COOLDOWN_MS` (default `15000`) — cooldown after hitting the limit.
 - Account status (ready / cooldown) is visible in `GET /health` — file paths and names are never exposed.
 - Set cooldown duration with `DEEPSEEK_ACCOUNT_COOLDOWN_MS` (default 600000 = 10 min).
 

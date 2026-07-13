@@ -216,6 +216,21 @@ function markAccountFailure(account, status, reason = '', retryAfterRaw = null) 
         console.log(`[account:${account.id}] cooldown for ${Math.round(cooldownMs / 1000)}s after HTTP ${status}${reason ? ` (${reason})` : ''}${retryMs != null ? ' (Retry-After)' : ''}`);
     }
 }
+// Empty/zero-char completions are a DeepSeek Web failure mode (rate limit, silent
+// throttle, or "verify you are human") that returns HTTP 200 with no content. It is
+// NOT an HTTP error, so markAccountFailure() never sees it. Treat consecutive empty
+// responses as account failures so multi-account failover actually kicks in.
+const EMPTY_FAILURE_COOLDOWN_MS = Number(process.env.DEEPSEEK_EMPTY_COOLDOWN_MS || 15000);
+const EMPTY_FAILURE_LIMIT = Number(process.env.DEEPSEEK_EMPTY_FAILURE_LIMIT || 2);
+function markAccountEmptyFailure(account) {
+    if (!account) return;
+    account.failures++;
+    if (account.failures >= EMPTY_FAILURE_LIMIT) {
+        account.cooldownUntil = Date.now() + EMPTY_FAILURE_COOLDOWN_MS;
+        console.log(`[account:${account.id}] cooldown for ${Math.round(EMPTY_FAILURE_COOLDOWN_MS / 1000)}s after ${account.failures} empty responses (failover)`);
+        account.failures = 0; // reset so it can be retried after cooldown
+    }
+}
 async function readDeepSeekJsonResponse(resp, label, account) {
     const text = await resp.text();
     let json = null;
@@ -1452,10 +1467,17 @@ const server = http.createServer(async (req, res) => {
                     return;
                 }
                 console.log(`${agentTag} Empty response (msg#${session.messageCount}, retry ${retryAttempt}/${MAX_RETRIES}). Resetting session...`);
+                // Fail over to another account: mark this one as an empty-failure and
+                // clear the sticky accountId so the next askDeepSeekStream() picks the
+                // next healthy account via round-robin (instead of re-hammering account_1).
+                const failedAcctId = session.accountId;
+                const failedAcct = accounts.find(a => a.id === failedAcctId);
+                if (failedAcct) markAccountEmptyFailure(failedAcct);
                 session.id = null;
                 session.parentMessageId = null;
                 session.createdAt = null;
                 session.messageCount = 0;
+                session.accountId = null;
                 // Brief delay before retry to let DeepSeek breathe
                 await new Promise(r => setTimeout(r, Math.min(1000 * retryAttempt, 5000)));
                 const { resp: retryResp } = await askDeepSeekStream(fullPrompt, agentId, requestedModel);
@@ -1659,6 +1681,10 @@ module.exports = {
         isDeepSeekModelErrorEvent,
         rebuildFragmentText,
         applyResponsePatchOperations,
+        selectAccountForSession,
+        markAccountEmptyFailure,
+        getAccounts: () => accounts,
+        resetAccounts: () => { accounts.length = 0; },
     },
     parseToolCall,
     toolcallNormalizer: normalizeToolCall ? require('./toolcall_normalizer.js') : null,
