@@ -52,6 +52,40 @@ OpenAI `tool_calls` payload.
 
 ---
 
+## 👥 Multi-account pool (failover)
+
+To survive DeepSeek Web free-tier rate limits / empty responses, run several
+accounts and let the proxy fail over automatically.
+
+The proxy already supports this out of the box via two env vars — no code changes needed:
+
+- **`DEEPSEEK_AUTH_DIR=./accounts`** — load every `*.json` in that folder as a separate account.
+- **`DEEPSEEK_AUTH_PATH="./a.json,./b.json"`** — explicit comma-separated list.
+
+Place your auth files in the provided **`accounts/`** folder (see `accounts/README.md` for details):
+
+```bash
+mkdir -p accounts
+cp deepseek-auth-main.json accounts/main.json
+cp deepseek-auth-backup.json accounts/backup.json
+chmod 600 accounts/*.json
+DEEPSEEK_AUTH_DIR=./accounts NON_INTERACTIVE=1 npm start
+```
+
+How it behaves:
+
+- New agent/sessions get an available account **round-robin**.
+- The chosen account is **sticky** to the session (no mid-conversation switching).
+- On `401` / `403` / `429` the account enters **cooldown**; the next request routes to another healthy account.
+- Account status (ready / cooldown) is visible in `GET /health` — file paths and names are never exposed.
+- Set cooldown duration with `DEEPSEEK_ACCOUNT_COOLDOWN_MS` (default 600000 = 10 min).
+
+> Security: each `*.json` is your DeepSeek Web login. The `accounts/` folder is
+> git-ignored for secrets (`accounts/*.json`); only `.gitkeep` and `accounts/README.md`
+> are tracked.
+
+---
+
 ## Navigation
 
 - [What it gives you](#-what-it-gives-you)

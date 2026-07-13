@@ -10,3 +10,6 @@ deepseek-auth.json
 /tmp/deepseek_response_*
 .DS_Store
 *.pdf
+
+# Multi-account auth files (keep the README/.gitkeep tracked, ignore the secrets)
+accounts/*.json
