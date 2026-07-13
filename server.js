@@ -389,6 +389,16 @@ const MODEL_CONFIGS = {
     },
 };
 
+// Context window: the DeepSeek Web chat caps INPUT at ~DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT
+// chars (measured empirically). Convert to an approximate token ceiling (chars/4) so
+// OpenAI-compatible clients (Qwen Code, etc.) can read `context_window` from /v1/models
+// just like they do for real APIs. Shared across all Web models (same chat input cap).
+const DEEPSEEK_CONTEXT_WINDOW_TOKENS = Math.floor(DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT / 4);
+for (const cfg of Object.values(MODEL_CONFIGS)) {
+    if (!cfg.context_window) cfg.context_window = DEEPSEEK_CONTEXT_WINDOW_TOKENS;
+}
+
+
 const SUPPORTED_MODEL_IDS = Object.keys(MODEL_CONFIGS).filter(id => MODEL_CONFIGS[id].supported);
 const ALL_MODEL_CAPABILITIES = Object.fromEntries(Object.entries(MODEL_CONFIGS).map(([id, cfg]) => [id, {
     id,
@@ -396,6 +406,7 @@ const ALL_MODEL_CAPABILITIES = Object.fromEntries(Object.entries(MODEL_CONFIGS).
     model_type: cfg.model_type,
     thinking_enabled: cfg.thinking_enabled,
     search_enabled: cfg.search_enabled,
+    context_window: cfg.context_window,
     capabilities: cfg.capabilities,
     supported: cfg.supported,
     unavailable_reason: cfg.unavailable_reason || null,
@@ -1220,7 +1231,7 @@ const server = http.createServer(async (req, res) => {
     // Models: OpenAI-compatible list exposes only aliases verified to work through this proxy.
     if (req.method === 'GET' && url.pathname === '/v1/models') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ object: 'list', data: SUPPORTED_MODEL_IDS.map(id => ({ id, object: 'model', created: 1700000000, owned_by: 'deepseek-web', real_model: MODEL_CONFIGS[id].real_model, capabilities: MODEL_CONFIGS[id].capabilities })) }));
+        res.end(JSON.stringify({ object: 'list', data: SUPPORTED_MODEL_IDS.map(id => ({ id, object: 'model', created: 1700000000, owned_by: 'deepseek-web', real_model: MODEL_CONFIGS[id].real_model, context_window: MODEL_CONFIGS[id].context_window, capabilities: MODEL_CONFIGS[id].capabilities })) }));
         return;
     }
 
@@ -1749,7 +1760,9 @@ module.exports = {
         CONTEXT: {
             limit: DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT,
             effectiveLimit: DEEPSEEK_CHAT_CONTEXT_EFFECTIVE_LIMIT,
+            windowTokens: DEEPSEEK_CONTEXT_WINDOW_TOKENS,
         },
+        MODEL_CONFIGS,
     },
     parseToolCall,
     toolcallNormalizer: normalizeToolCall ? require('./toolcall_normalizer.js') : null,

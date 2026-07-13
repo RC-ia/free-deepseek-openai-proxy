@@ -353,3 +353,12 @@ test('CONTEXT effective limit applies safety margin', () => {
   assert.ok(effectiveLimit >= limit * 0.9, 'margin must not be too aggressive (<10%)');
 });
 
+// Regression: /v1/models must expose context_window (tokens) per model, like real APIs.
+test('every model exposes a context_window derived from the chat char limit', () => {
+  const { windowTokens, limit } = serverInternals.CONTEXT;
+  assert.equal(windowTokens, Math.floor(limit / 4));
+  for (const [id, cfg] of Object.entries(serverInternals.MODEL_CONFIGS)) {
+    assert.equal(cfg.context_window, windowTokens, `model ${id} must expose context_window`);
+  }
+});
+
