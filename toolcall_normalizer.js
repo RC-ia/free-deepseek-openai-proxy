@@ -10,18 +10,23 @@
  * handled strict-JSON / fenced-JSON / <tool_call>{...}</tool_call> (JSON body) /
  * legacy TOOL_CALL:, but DeepSeek Web emits function calls in native XML shapes.
  *
- * Two native XML shapes observed from DeepSeek Web:
+ * Native XML shapes observed from DeepSeek Web:
  *
  *   (A) singular <tool_call name="x"><parameter name="p">v</parameter></tool_call>
- *
  *   (B) plural   <tool_calls>
  *                  <function name="read_file">
  *                    <parameter name="file_path">C:\...</parameter>
  *                  </function>
  *                  <function name="glob">...</function>
  *                </tool_calls>
+ *   (C) namespaced <antml:tool_calls> / <antml:tool_call> (same as A/B)
+ *   (D) bare <function name="x">...</function> (no <tool_calls> wrapper)
+ *
+ * Parameter values are frequently HTML-escaped by DeepSeek Web (&quot; &lt;
+ * &gt; &#39; &amp;), so we decode entities before attempting JSON.parse.
  *
  * normalizeToolCall() returns an ARRAY of { name, arguments } (empty if none).
+ * `arguments` is always a plain object (stringified later by the caller).
  *
  * ORIGINAL upstream proxy (credits / license):
  *   ForgetMeAI/FreeDeepseekAPI  -  https://github.com/ForgetMeAI/FreeDeepseekAPI
@@ -29,6 +34,19 @@
  *
  * This normalizer is a companion drop-in patch, not a fork replacement.
  */
+
+/** Decode the HTML entities DeepSeek Web commonly emits inside parameter values. */
+function decodeHtmlEntities(s) {
+  if (typeof s !== 'string') return s;
+  return s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0*39;/g, "'")      // &#39; / &#039;
+    .replace(/&apos;/g, "'")
+    .replace(/&#0*34;/g, '"')      // &#34; / &#034; (numeric double quote)
+    .replace(/&amp;/g, '&');       // must run LAST to avoid double-decoding
+}
 
 /**
  * Coerce an unknown value into { name, arguments } where arguments is a
@@ -49,16 +67,48 @@ function coerceToolCallObject(obj) {
   return { name, arguments: JSON.stringify(args) };
 }
 
-/** Parse a single <parameter name="X">VALUE</parameter> value. */
+/**
+ * Parse a single <parameter name="X">VALUE</parameter> value.
+ * VALUE may be JSON (object/array/number/bool, possibly HTML-escaped), a plain
+ * string, or a special numeric literal (Infinity/-Infinity/NaN).
+ */
 function parseParameterValue(raw) {
-  const text = raw.trim();
+  const text = decodeHtmlEntities(raw == null ? '' : String(raw)).trim();
   if (text === '') return '';
-  try { return JSON.parse(text); } catch (e) { /* not JSON */ }
+  try { return JSON.parse(text); } catch (e) { /* not strict JSON */ }
   if (text === 'true') return true;
   if (text === 'false') return false;
   if (text === 'null') return null;
+  if (text === 'Infinity') return Infinity;
+  if (text === '-Infinity') return -Infinity;
+  if (text === 'NaN') return NaN;
   if (/^-?\d+(\.\d+)?$/.test(text)) return Number(text);
   return text;
+}
+
+/** Match the value of a <parameter>, tolerating extra attributes (type=, etc.). */
+const PARAM_NAMED_RE = /<parameter\s+name\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/parameter>/gi;
+const PARAM_BARE_RE = /<parameter\s*>([\s\S]*?)<\/parameter>/gi;
+
+/**
+ * Collect parameters from an XML fragment (function or tool_call body).
+ * Named <parameter name="x"> map to x; unnamed <parameter> map to argN.
+ */
+function collectParameters(fragment) {
+  const args = {};
+  let found = 0;
+  let m;
+  PARAM_NAMED_RE.lastIndex = 0;
+  while ((m = PARAM_NAMED_RE.exec(fragment)) !== null) {
+    found++;
+    args[m[1]] = parseParameterValue(m[2]);
+  }
+  PARAM_BARE_RE.lastIndex = 0;
+  while ((m = PARAM_BARE_RE.exec(fragment)) !== null) {
+    found++;
+    args[`arg${found}`] = parseParameterValue(m[1]);
+  }
+  return { args, found };
 }
 
 /** Parse ONE <function name="X">...</function> (with optional <parameter> children). */
@@ -68,20 +118,13 @@ function parseFunctionTag(funcTag) {
   const name = nameMatch ? nameMatch[1] : null;
   if (!name) return null;
 
-  const args = {};
-  const paramRe = /<parameter\s+name\s*=\s*["']([^"']+)["']\s*>([\s\S]*?)<\/parameter>/gi;
-  let m;
-  let found = false;
-  while ((m = paramRe.exec(funcTag)) !== null) {
-    found = true;
-    args[m[1]] = parseParameterValue(m[2]);
-  }
+  const { args, found } = collectParameters(funcTag);
 
   // Single generic param whose value is already an object/array -> promote.
   const keys = Object.keys(args);
   if (keys.length === 1) {
     const only = keys[0];
-    const generic = /^(input|arguments|argument|value|params|parameters|body|content)$/i.test(only);
+    const generic = /^(input|arguments|argument|value|params|parameters|body|content|arg1)$/i.test(only);
     if (generic && args[only] && typeof args[only] === 'object') {
       return { name, arguments: args[only] };
     }
@@ -101,16 +144,7 @@ function parseNativeXmlSingular(tag) {
   const name = nameMatch ? nameMatch[1] : null;
   if (!name) return null;
 
-  const args = {};
-  // NOTE: tolerate extra attributes on <parameter> (e.g. type="array"), and
-  // capture the value non-greedily up to the matching </parameter>.
-  const paramRe = /<parameter\s+name\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/parameter>/gi;
-  let m;
-  let found = false;
-  while ((m = paramRe.exec(tag)) !== null) {
-    found = true;
-    args[m[1]] = parseParameterValue(m[2]);
-  }
+  const { args, found } = collectParameters(tag);
 
   if (!found) {
     // No <parameter> children: the tool-call body may be inline JSON, e.g.
@@ -121,7 +155,7 @@ function parseNativeXmlSingular(tag) {
       .trim();
     if (body) {
       try {
-        const parsed = JSON.parse(body);
+        const parsed = JSON.parse(decodeHtmlEntities(body));
         if (parsed && typeof parsed === 'object') return { name, arguments: parsed };
       } catch (e) { /* not JSON; fall through below */ }
     }
@@ -132,7 +166,7 @@ function parseNativeXmlSingular(tag) {
   const keys = Object.keys(args);
   if (keys.length === 1) {
     const only = keys[0];
-    const generic = /^(input|arguments|argument|value|params|parameters|body|content)$/i.test(only);
+    const generic = /^(input|arguments|argument|value|params|parameters|body|content|arg1)$/i.test(only);
     if (generic && args[only] && typeof args[only] === 'object') {
       return { name, arguments: args[only] };
     }
@@ -144,7 +178,7 @@ function parseNativeXmlSingular(tag) {
 /** Parse the plural native shape: <tool_calls><function ...>...</function></tool_calls> */
 function parseNativeXmlPlural(tag) {
   const calls = [];
-  const funcRe = /<function\s+[^>]*>([\s\S]*?)<\/function>/gi;
+  const funcRe = /<([\w:-]+:)?function\s+[^>]*>([\s\S]*?)<\/([\w:-]+:)?function>/gi;
   let m;
   while ((m = funcRe.exec(tag)) !== null) {
     const fn = parseFunctionTag(m[0]);
@@ -190,6 +224,12 @@ function safeParse(s) {
   try { return JSON.parse(s); } catch (e) { return s; }
 }
 
+// Matches <tool_calls>, <antml:tool_calls>, etc. (namespaced-aware).
+const TOOL_CALLS_OPEN = /<([\w:-]+:)?tool_calls\b[^>]*>/i;
+const TOOL_CALLS_CLOSE = /<\/([\w:-]+:)?tool_calls>/i;
+// Matches a bare <function name=...>...</function> (no <tool_calls> wrapper).
+const BARE_FUNCTION_RE = /<([\w:-]+:)?function\s+[^>]*name\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/([\w:-]+:)?function>/gi;
+
 /**
  * Main entry: normalize raw model text into an ARRAY of tool calls.
  * @param {string} text
@@ -197,21 +237,35 @@ function safeParse(s) {
  */
 function normalizeToolCall(text) {
   if (!text || typeof text !== 'string') return [];
-  const out = [];
 
   // 1) Plural native XML: <tool_calls><function name=...>...</function></tool_calls>
-  const pluralMatch = text.match(/<tool_calls\b[^>]*>([\s\S]*?)<\/tool_calls>/i);
-  if (pluralMatch) {
-    const calls = parseNativeXmlPlural(pluralMatch[0]);
+  //    (namespaced variants like <antml:tool_calls> are supported).
+  const open = text.match(TOOL_CALLS_OPEN);
+  if (open) {
+    const close = text.match(TOOL_CALLS_CLOSE);
+    const start = open.index + open[0].length;
+    const end = close ? close.index : text.length;
+    const calls = parseNativeXmlPlural(text.substring(start, end));
     if (calls.length) return calls;
   }
 
   // 2) Singular native XML: <tool_call name="x"><parameter>...</parameter></tool_call>
-  const xmlMatch = text.match(/<tool_call\b[^>]*>([\s\S]*?)<\/tool_call>/i);
+  //    (namespaced <antml:tool_call> supported via the name= fallback).
+  const xmlMatch = text.match(/<([\w:-]+:)?tool_call\b[^>]*>([\s\S]*?)<\/([\w:-]+:)?tool_call>/i);
   if (xmlMatch) {
     const native = parseNativeXmlSingular(xmlMatch[0]);
     if (native && native.name) return [native];
   }
+
+  // 2b) Bare <function name="x">...</function> with no <tool_calls> wrapper.
+  BARE_FUNCTION_RE.lastIndex = 0;
+  const bare = [];
+  let bm;
+  while ((bm = BARE_FUNCTION_RE.exec(text)) !== null) {
+    const fn = parseFunctionTag(`<function name="${bm[2]}">${bm[3]}</function>`);
+    if (fn && fn.name) bare.push(fn);
+  }
+  if (bare.length) return bare;
 
   // 3) Fenced JSON
   const fenceRe = /```(?:json)?\s*([\s\S]*?)```/gi;
@@ -244,11 +298,19 @@ function normalizeToolCall(text) {
     }
   }
 
-  return out;
+  return [];
 }
 
 function isToolCall(text) {
   return normalizeToolCall(text).length > 0;
 }
 
-module.exports = { normalizeToolCall, isToolCall, parseNativeXmlSingular, parseNativeXmlPlural, parseFunctionTag, parseParameterValue };
+module.exports = {
+  normalizeToolCall,
+  isToolCall,
+  parseNativeXmlSingular,
+  parseNativeXmlPlural,
+  parseFunctionTag,
+  parseParameterValue,
+  decodeHtmlEntities,
+};

@@ -237,7 +237,66 @@ test('normalizeToolCall handles inline-JSON tool-call body', () => {
   assert.equal(args.todos.length, 1);
 });
 
-// Regression: with >1 ready account, every request must rotate to a DIFFERENT
+// Regression: HTML entities emitted by DeepSeek Web inside parameter values must
+// be decoded before JSON.parse, otherwise object args come back as dirty strings.
+test('normalizeToolCall decodes HTML entities in parameter values', () => {
+  const text = `<tool_call name="write_file">
+    <parameter name="path">/tmp/a.txt</parameter>
+    <parameter name="content">{"key": "val with &quot;quotes&quot; and &lt;tags&gt;"}</parameter>
+  </tool_call>`;
+  const calls = normalizeToolCall(text);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'write_file');
+  const args = calls[0].arguments;
+  assert.equal(args.path, '/tmp/a.txt');
+  assert.equal(args.content, '{"key": "val with "quotes" and <tags>"}');
+});
+
+// Regression: <parameter> without a name attribute must still be collected (argN).
+test('normalizeToolCall collects unnamed <parameter> as argN', () => {
+  const text = `<tool_call name="echo">
+    <parameter>just a value</parameter>
+  </tool_call>`;
+  const calls = normalizeToolCall(text);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'echo');
+  assert.equal(calls[0].arguments.arg1, 'just a value');
+});
+
+// Regression: namespaced <antml:tool_calls> wrapper must be parsed like <tool_calls>.
+test('normalizeToolCall parses namespaced <antml:tool_calls> plural', () => {
+  const text = `<antml:tool_calls>
+    <antml:function name="read_file"><parameter name="file_path">/a.txt</parameter></antml:function>
+  </antml:tool_calls>`;
+  const calls = normalizeToolCall(text);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'read_file');
+  assert.equal(calls[0].arguments.file_path, '/a.txt');
+});
+
+// Regression: bare <function name="x"> without a <tool_calls> wrapper must still parse.
+test('normalizeToolCall parses bare <function> without wrapper', () => {
+  const text = `Here is the call: <function name="glob"><parameter name="pattern">**/*</parameter></function> done.`;
+  const calls = normalizeToolCall(text);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'glob');
+  assert.equal(calls[0].arguments.pattern, '**/*');
+});
+
+// Regression: special numeric literals (Infinity / -Infinity / NaN) must survive as numbers.
+test('normalizeToolCall preserves special numeric literals', () => {
+  const text = `<tool_call name="plot">
+    <parameter name="max">Infinity</parameter>
+    <parameter name="min">-Infinity</parameter>
+    <parameter name="gap">NaN</parameter>
+  </tool_call>`;
+  const args = normalizeToolCall(text)[0].arguments;
+  assert.equal(args.max, Infinity);
+  assert.equal(args.min, -Infinity);
+  assert.ok(Number.isNaN(args.gap));
+});
+
+
 // account (round-robin) to dilute per-account traffic and reduce ban risk, and
 // reset the web session when the account changes.
 test('selectAccountForSession round-robins across multiple ready accounts', () => {
