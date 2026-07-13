@@ -662,8 +662,9 @@ function parseToolCall(text) {
     if (normalizeToolCall) {
         const norm = normalizeToolCall(text);
         if (norm && norm.name) {
-            console.log(`[parseToolCall] SUCCESS normalized (native/companion): ${norm.name}`);
-            return { name: norm.name, arguments: typeof norm.arguments === 'string' ? norm.arguments : JSON.stringify(norm.arguments) };
+            const argsStr = typeof norm.arguments === 'string' ? norm.arguments : JSON.stringify(norm.arguments);
+            console.log(`[parseToolCall] SUCCESS normalized (native/companion): ${norm.name} args=${argsStr}`);
+            return { name: norm.name, arguments: argsStr };
         }
     }
 
@@ -1336,6 +1337,12 @@ const server = http.createServer(async (req, res) => {
             const fullPrompt = systemPrompt
                 ? `${systemPrompt}\n\n${historyPrefix}${prompt}`
                 : `${historyPrefix}${prompt}`;
+
+            // [diagnostics] Log prompt size sent to DeepSeek so we can tell whether
+            // empty-response loops are caused by hitting the context window limit.
+            const promptChars = fullPrompt.length;
+            const promptEstTokens = Math.ceil(promptChars / 4);
+            console.log(`${agentTag} >>> sending prompt to DeepSeek: ~${promptChars} chars (~${promptEstTokens} tokens est.) | session.msgs=${session.history.length} | model=${requestedModel}`);
 
             const startTime = Date.now();
             const { resp: dsResp } = await askDeepSeekStream(fullPrompt, agentId, requestedModel);
