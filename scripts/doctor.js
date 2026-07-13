@@ -4,6 +4,7 @@ const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
 const DEFAULT_AUTH = process.env.DEEPSEEK_AUTH_PATH || path.join(ROOT, 'deepseek-auth.json');
+const ACCOUNTS_DIR = process.env.DEEPSEEK_AUTH_DIR || path.join(ROOT, 'accounts');
 
 function isTruthy(v) { return /^(1|true|yes|on)$/i.test(String(v || '')); }
 function argHas(args, ...names) { return args.some(a => names.includes(a)); }
@@ -16,6 +17,17 @@ function authPaths() {
   }
   if (process.env.DEEPSEEK_AUTH_PATH && process.env.DEEPSEEK_AUTH_PATH.includes(',')) {
     return process.env.DEEPSEEK_AUTH_PATH.split(',').map(s => s.trim()).filter(Boolean);
+  }
+  // Auto-detect the accounts/ folder when no single deepseek-auth.json exists
+  // (keeps `npm run doctor` consistent with the server's auto-detection).
+  if (!fs.existsSync(DEFAULT_AUTH) && fs.existsSync(ACCOUNTS_DIR)) {
+    try {
+      const found = fs.readdirSync(ACCOUNTS_DIR)
+        .filter(f => f.endsWith('.json'))
+        .sort()
+        .map(f => path.join(ACCOUNTS_DIR, f));
+      if (found.length > 0) return found;
+    } catch { /* ignore */ }
   }
   return [DEFAULT_AUTH];
 }
@@ -65,7 +77,8 @@ async function liveCheck(auth) {
 async function main(args = process.argv.slice(2)) {
   const offline = argHas(args, '--offline') || isTruthy(process.env.DOCTOR_OFFLINE);
   console.log('FreeDeepseekAPI doctor');
-  console.log(`Auth source: ${process.env.DEEPSEEK_AUTH_DIR ? 'DEEPSEEK_AUTH_DIR' : 'DEEPSEEK_AUTH_PATH/default'}`);
+  const usingAccounts = !process.env.DEEPSEEK_AUTH_DIR && !process.env.DEEPSEEK_AUTH_PATH?.includes(',') && !fs.existsSync(DEFAULT_AUTH) && fs.existsSync(ACCOUNTS_DIR);
+  console.log(`Auth source: ${process.env.DEEPSEEK_AUTH_DIR ? 'DEEPSEEK_AUTH_DIR' : (usingAccounts ? 'accounts/ (auto-detected)' : 'DEEPSEEK_AUTH_PATH/default')}`);
   const results = authPaths().map(checkAuthFile);
   let ok = true;
   for (const r of results) {
