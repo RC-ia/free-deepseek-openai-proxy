@@ -8,6 +8,7 @@ const { spawnSync } = require('node:child_process');
 const ROOT = path.resolve(__dirname, '..');
 const serverInternals = require('../server.js').__test;
 const { parseToolCall } = require('../server.js');
+const { normalizeToolCall } = require('../toolcall_normalizer.js');
 
 function tmpdir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'fdsapi-test-'));
@@ -176,4 +177,34 @@ test('parseToolCall multi-parameter mixed types', () => {
   assert.equal(args.path, '/tmp/hi.py');
   assert.equal(args.overwrite, true);
   assert.equal(args.count, 7);
+});
+
+test('normalizeToolCall parses NEW plural <tool_calls><function> format', () => {
+  const text = `<tool_calls>
+    <function name="read_file">
+      <parameter name="file_path">C:\\Users\\Adoro\\manga-site\\templates\\index.html</parameter>
+    </function>
+    <function name="glob">
+      <parameter name="pattern">**/*</parameter>
+      <parameter name="path">C:\\Users\\Adoro\\manga-site\\static\\js</parameter>
+    </function>
+  </tool_calls>`;
+  const calls = normalizeToolCall(text);
+  assert.equal(calls.length, 2, 'should parse both function calls');
+  assert.equal(calls[0].name, 'read_file');
+  assert.equal(calls[0].arguments.file_path, 'C:\\Users\\Adoro\\manga-site\\templates\\index.html');
+  assert.equal(calls[1].name, 'glob');
+  assert.equal(calls[1].arguments.pattern, '**/*');
+  assert.equal(calls[1].arguments.path, 'C:\\Users\\Adoro\\manga-site\\static\\js');
+});
+
+test('parseToolCall returns first call from plural <tool_calls> block', () => {
+  const text = `<tool_calls>
+    <function name="read_file"><parameter name="file_path">/a.txt</parameter></function>
+    <function name="glob"><parameter name="pattern">**/*</parameter></function>
+  </tool_calls>`;
+  const tc = parseToolCall(text);
+  assert.equal(tc.name, 'read_file');
+  const args = JSON.parse(tc.arguments);
+  assert.equal(args.file_path, '/a.txt');
 });

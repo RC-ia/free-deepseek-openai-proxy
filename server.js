@@ -660,11 +660,14 @@ function parseToolCall(text) {
     // The legacy branches below treat that XML body as JSON and fail. If the
     // normalizer recognizes a real tool call, prefer it and short-circuit.
     if (normalizeToolCall) {
-        const norm = normalizeToolCall(text);
-        if (norm && norm.name) {
-            const argsStr = typeof norm.arguments === 'string' ? norm.arguments : JSON.stringify(norm.arguments);
-            console.log(`[parseToolCall] SUCCESS normalized (native/companion): ${norm.name} args=${argsStr}`);
-            return { name: norm.name, arguments: argsStr };
+        const normCalls = normalizeToolCall(text);
+        if (normCalls.length > 0) {
+            const argsStr = typeof normCalls[0].arguments === 'string' ? normCalls[0].arguments : JSON.stringify(normCalls[0].arguments);
+            console.log(`[parseToolCall] SUCCESS normalized (native/companion): ${normCalls.map(c => c.name).join(', ')} args=${argsStr}`);
+            // Return the first call to keep the single-tool-call contract; extra
+            // calls in a multi-<tool_calls> block are logged above for visibility.
+            const first = normCalls[0];
+            return { name: first.name, arguments: typeof first.arguments === 'string' ? first.arguments : JSON.stringify(first.arguments) };
         }
     }
 
