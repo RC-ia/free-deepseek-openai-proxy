@@ -653,9 +653,11 @@ function coerceToolCallObject(obj) {
   // - {"function_call": {"name": "x", "arguments": "..."}}
   // - {"name": "x", "arguments": {...}}            (OpenAI-style)
   // - {"tool": "x", "arguments": {...}}            (DeepSeek Web line-numbered / compact form)
+  // - {"skill": "x"}                                (compact <tool_call>{...}</tool_call> body)
   // - {"function": {"name": "x", "arguments": {...}}}
   const name =
     (typeof obj.tool === 'string' ? obj.tool : null) ||
+    (typeof obj.skill === 'string' ? obj.skill : null) ||
     (obj.tool_call && typeof obj.tool_call === 'object' ? obj.tool_call.name : null) ||
     (obj.function_call && typeof obj.function_call === 'object' ? obj.function_call.name : null) ||
     (obj.function && typeof obj.function === 'object' ? obj.function.name : null) ||

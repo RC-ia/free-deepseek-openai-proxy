@@ -59,9 +59,11 @@ function coerceToolCallObject(obj) {
   // - {"function_call": {"name": "x", "arguments": "..."}}
   // - {"name": "x", "arguments": {...}}            (OpenAI-style)
   // - {"tool": "x", "arguments": {...}}            (DeepSeek Web line-numbered / compact form)
+  // - {"skill": "x"}                                (compact <tool_call>{...}</tool_call> body)
   // - {"function": {"name": "x", "arguments": {...}}}
   const name =
     (typeof obj.tool === 'string' ? obj.tool : null) ||
+    (typeof obj.skill === 'string' ? obj.skill : null) ||
     (obj.tool_call && typeof obj.tool_call === 'object' ? obj.tool_call.name : null) ||
     (obj.function_call && typeof obj.function_call === 'object' ? obj.function_call.name : null) ||
     (obj.function && typeof obj.function === 'object' ? obj.function.name : null) ||
@@ -158,13 +160,13 @@ function parseNativeXmlSingular(tag) {
   const nameMatch = tag.match(/<tool_call\s+name\s*=\s*["']([^"']+)["']/i)
     || tag.match(/name\s*=\s*["']([^"']+)["']/i);
   const name = nameMatch ? nameMatch[1] : null;
-  if (!name) return null;
 
   const { args, found } = collectParameters(tag);
 
   if (!found) {
     // No <parameter> children: the tool-call body may be inline JSON, e.g.
     //   <tool_call name="x">{"todos":[...]}</tool_call>
+    //   <tool_call>{"skill":"mangadex-flask-proxy"}</tool_call>   (name comes from JSON)
     const body = tag
       .replace(/^<tool_call[^>]*>/i, '')
       .replace(/<\/tool_call>\s*$/i, '')
@@ -172,9 +174,14 @@ function parseNativeXmlSingular(tag) {
     if (body) {
       try {
         const parsed = JSON.parse(decodeHtmlEntities(body));
-        if (parsed && typeof parsed === 'object') return { name, arguments: parsed };
+        if (parsed && typeof parsed === 'object') {
+          const jsName = parsed.skill || parsed.tool || parsed.name;
+          if (!name && !jsName) return null;
+          return { name: name || jsName, arguments: parsed };
+        }
       } catch (e) { /* not JSON; fall through below */ }
     }
+    if (!name) return null;
     return { name, arguments: {} };
   }
 

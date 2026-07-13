@@ -391,4 +391,14 @@ test('normalizeToolCall recovers "tool" key + line-number prefix', () => {
   assert.equal(args.file_path, '/home/user/app.js');
 });
 
+// Regression: <tool_call> with no name= attr, body JSON uses "skill" as the name.
+test('parseToolCall recovers nameless <tool_call> with "skill" key', () => {
+  const input = '<tool_call>\n    {"skill": "mangadex-flask-proxy"}\n</tool_call>';
+  const tc = parseToolCall(input);
+  assert.ok(tc, 'should recover a tool call');
+  assert.equal(tc.name, 'mangadex-flask-proxy');
+  const args = JSON.parse(tc.arguments);
+  assert.equal(args.skill, 'mangadex-flask-proxy');
+});
+
 
