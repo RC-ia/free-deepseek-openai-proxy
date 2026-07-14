@@ -73,6 +73,10 @@ const SESSION_TTL_MS = 2 * 60 * 60 * 1000;  // 2 hours
 const DS_CONFIG_PATH = process.env.DEEPSEEK_AUTH_PATH || path.join(__dirname, 'deepseek-auth.json');
 const ACCOUNTS_DIR = process.env.DEEPSEEK_AUTH_DIR || path.join(__dirname, 'accounts');
 const DEFAULT_ACCOUNT_COOLDOWN_MS = Number(process.env.DEEPSEEK_ACCOUNT_COOLDOWN_MS || 10 * 60 * 1000);
+// Per-call cooldown: after an account is used for a request, it is held in
+// "wait" for this long so rapid-fire clients (OpenCode, etc.) cannot spawn a
+// brand-new DeepSeek chat every few seconds. Defaults to 25s.
+const ACCOUNT_CALL_COOLDOWN_MS = Number(process.env.DEEPSEEK_ACCOUNT_CALL_COOLDOWN_MS || 25 * 1000);
 // Theoretical context character limit of the DeepSeek Web chat (measured:
 // ~162131 chars). The proxy mirrors the chat, so this is the effective cap on
 // the prompt we can send. Leave a safety margin so we reject BEFORE the server
@@ -170,16 +174,26 @@ function accountStatus(account) {
         last_used_at: account.lastUsedAt || null,
     };
 }
-function selectAccountForSession(session) {
-    const now = Date.now();
-    const ready = accounts.filter(a => a.config.token && a.config.cookie && a.cooldownUntil <= now);
+async function selectAccountForSession(session) {
+    let now = Date.now();
+    let ready = accounts.filter(a => a.config.token && a.config.cookie && a.cooldownUntil <= now);
     if (ready.length === 0) {
+        // All accounts are in their per-call (or failure) cooldown. Instead of
+        // erroring out, wait until the soonest account becomes free, then retry.
         const waiting = accounts.filter(a => a.config.token && a.config.cookie).sort((a, b) => a.cooldownUntil - b.cooldownUntil)[0];
         if (waiting) {
-            const waitSec = Math.max(1, Math.ceil((waiting.cooldownUntil - now) / 1000));
-            throw new Error(`All DeepSeek auth accounts are cooling down. Retry in ~${waitSec}s or import a fresh account with npm run auth:import.`);
+            const waitMs = Math.max(0, waiting.cooldownUntil - now);
+            if (waitMs > 0) {
+                const waitSec = Math.ceil(waitMs / 1000);
+                console.log(`[DS-API] All accounts cooling down — waiting ~${waitSec}s for ${waiting.id} to free up.`);
+                await new Promise(resolve => setTimeout(resolve, waitMs + 50));
+            }
+            now = Date.now();
+            ready = accounts.filter(a => a.config.token && a.config.cookie && a.cooldownUntil <= now);
         }
-        throw new Error('No valid DeepSeek auth accounts. Run npm run auth or npm run auth:import.');
+        if (ready.length === 0) {
+            throw new Error('No valid DeepSeek auth accounts. Run npm run auth or npm run auth:import.');
+        }
     }
 
     // SINGLE ACCOUNT: keep the existing sticky behavior (no need to rotate).
@@ -463,9 +477,12 @@ function isSupportedModel(model) { return resolveModelConfig(model).supported ==
 async function askDeepSeekStream(prompt, agentId, model = 'deepseek-default') {
     const modelCfg = resolveModelConfig(model);
     const session = getOrCreateAgentSession(agentId);
-    const account = selectAccountForSession(session);
+    const account = await selectAccountForSession(session);
     const dsHeaders = account.headers;
     account.lastUsedAt = Date.now();
+    // Per-call cooldown: hold this account in "wait" so rapid-fire clients
+    // (OpenCode, etc.) cannot spin up a new DeepSeek chat every few seconds.
+    account.cooldownUntil = Date.now() + ACCOUNT_CALL_COOLDOWN_MS;
     const agentTag = `[${agentId}/acct:${account.id}]`;
 
     // Auto-reset on deep message chain

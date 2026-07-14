@@ -330,7 +330,7 @@ test('normalizeToolCall parses OpenCode <invokes> wrapper', () => {
 
 // account (round-robin) to dilute per-account traffic and reduce ban risk, and
 // reset the web session when the account changes.
-test('selectAccountForSession round-robins across multiple ready accounts', () => {
+test('selectAccountForSession round-robins across multiple ready accounts', async () => {
   const mk = (id) => ({ id, config: { token: 't', cookie: 'c' }, cooldownUntil: 0, failures: 0, lastUsedAt: 0 });
   serverInternals._setAccountsForTest([mk('account_1'), mk('account_2')]);
   serverInternals._resetRoundRobin();
@@ -339,7 +339,7 @@ test('selectAccountForSession round-robins across multiple ready accounts', () =
   const seen = [];
   let allDifferent = true;
   for (let i = 0; i < 4; i++) {
-    const acct = serverInternals.selectAccountForSession(session);
+    const acct = await serverInternals.selectAccountForSession(session);
     seen.push(acct.id);
     if (i > 0 && seen[i] === seen[i - 1]) allDifferent = false;
   }
@@ -348,14 +348,31 @@ test('selectAccountForSession round-robins across multiple ready accounts', () =
   serverInternals._setAccountsForTest([]);
 });
 
+// New behavior: when every account is in its per-call cooldown, selection must
+// WAIT (not throw) until the soonest account frees up, then return it.
+test('selectAccountForSession waits when all accounts are cooling down', async () => {
+  const mk = (id, cooldownMs) => ({ id, config: { token: 't', cookie: 'c' }, cooldownUntil: Date.now() + cooldownMs, failures: 0, lastUsedAt: 0 });
+  // account_2 frees up 120ms before account_1.
+  serverInternals._setAccountsForTest([mk('account_1', 320), mk('account_2', 200)]);
+  serverInternals._resetRoundRobin();
+  const session = { id: 'sess-w', parentMessageId: 'p', createdAt: Date.now(), messageCount: 1 };
+
+  const start = Date.now();
+  const acct = await serverInternals.selectAccountForSession(session);
+  const elapsed = Date.now() - start;
+  assert.equal(acct.id, 'account_2', 'must return the soonest-to-free account');
+  assert.ok(elapsed >= 180, `should have waited for cooldown, waited ${elapsed}ms`);
+  serverInternals._setAccountsForTest([]);
+});
+
 // Regression: with a single account, selection stays sticky (no rotation, no reset).
-test('selectAccountForSession stays sticky with a single account', () => {
+test('selectAccountForSession stays sticky with a single account', async () => {
   const mk = (id) => ({ id, config: { token: 't', cookie: 'c' }, cooldownUntil: 0, failures: 0, lastUsedAt: 0 });
   serverInternals._setAccountsForTest([mk('account_1')]);
   serverInternals._resetRoundRobin();
   const session = { id: 'sess-y', parentMessageId: 'p', createdAt: Date.now(), messageCount: 3 };
-  const a = serverInternals.selectAccountForSession(session);
-  const b = serverInternals.selectAccountForSession(session);
+  const a = await serverInternals.selectAccountForSession(session);
+  const b = await serverInternals.selectAccountForSession(session);
   assert.equal(a.id, 'account_1');
   assert.equal(b.id, 'account_1');
   assert.equal(session.id, 'sess-y', 'session must not be reset with a single account');

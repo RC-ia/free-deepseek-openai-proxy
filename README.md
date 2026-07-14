@@ -85,6 +85,7 @@ How it behaves:
   - `DEEPSEEK_EMPTY_COOLDOWN_MS` (default `15000`) — cooldown after hitting the limit.
 - Account status (ready / cooldown) is visible in `GET /health` — file paths and names are never exposed.
 - Set cooldown duration with `DEEPSEEK_ACCOUNT_COOLDOWN_MS` (default 600000 = 10 min).
+- **Per-call account throttle:** after an account serves a request it is held in "wait" for `DEEPSEEK_ACCOUNT_CALL_COOLDOWN_MS` (default `25000` = 25 s). Rapid-fire clients (OpenCode, etc.) cannot spawn a new DeepSeek chat every few seconds. If **every** account is in its wait window, the API **blocks and waits** (up to the soonest account freeing up) instead of erroring — so generation never starts until an account is available.
 
 > Security: each `*.json` is your DeepSeek Web login. The `accounts/` folder is
 > git-ignored for secrets (`accounts/*.json`); only `.gitkeep` and `accounts/README.md`
