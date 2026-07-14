@@ -1,11 +1,11 @@
-# FreeDeepseekAPI
+# free-deepseek-openai-proxy
 
 <p align="center">
   <strong>Local OpenAI-compatible API proxy for DeepSeek Web Chat</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/RC-ia/FreeDeepseekAPI/blob/main/LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/license-MIT-green.svg" /></a>
+  <a href="https://github.com/RC-ia/free-deepseek-openai-proxy/blob/main/LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/license-MIT-green.svg" /></a>
   <img alt="Node.js 18 plus" src="https://img.shields.io/badge/node-18%2B-339933.svg" />
   <img alt="No npm dependencies" src="https://img.shields.io/badge/dependencies-0-blue.svg" />
   <img alt="OpenAI compatible" src="https://img.shields.io/badge/OpenAI-compatible-111111.svg" />
@@ -20,7 +20,7 @@
   <a href="#-open-webui">Open WebUI</a>
 </p>
 
-FreeDeepseekAPI runs a local API server for **DeepSeek Web Chat** (`chat.deepseek.com`) and lets you connect DeepSeek Web to Open WebUI, LiteLLM, Hermes, Claude Code, OpenAI SDK-style clients, and other OpenAI-compatible tools.
+free-deepseek-openai-proxy runs a local API server for **DeepSeek Web Chat** (`chat.deepseek.com`) and lets you connect DeepSeek Web to Open WebUI, LiteLLM, Hermes, Claude Code, OpenCode, OpenAI SDK-style clients, and other OpenAI-compatible tools.
 
 It works through your normal logged-in DeepSeek account in a separate Chrome profile. The local server accepts API requests and, under the hood, talks to DeepSeek Web via the saved browser session.
 
@@ -42,6 +42,9 @@ closes a gap in the upstream parser: DeepSeek Web emits native function calls as
 ```
 
 — which the original `parseToolCall()` could not parse (it expected a JSON body).
+The normalizer also understands the **OpenCode** tool-call shape (`<invoke name="…">…</invoke>`,
+optionally wrapped in `<invokes>…</invokes>`), mapping it onto the native parser so OpenCode and
+other clients that emit `<invoke>` work end-to-end through the proxy.
 The normalizer runs as a FAST-PATH inside `parseToolCall()` and converts that native
 shape (plus strict-JSON / fenced-JSON / legacy `TOOL_CALL:` variants) into a clean
 OpenAI `tool_calls` payload.

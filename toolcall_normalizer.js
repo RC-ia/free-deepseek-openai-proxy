@@ -277,6 +277,31 @@ function normalizeToolCall(text) {
     if (calls.length) return calls;
   }
 
+  // 1b) OpenCode-style <invoke name="x"><parameter name="y">v</parameter></invoke>.
+  //     OpenCode emits this shape (NOT the native <tool_call>); map it onto the
+  //     native parser so the proxy stays client-agnostic. May appear as several
+  //     solitary <invoke> tags or wrapped in <invokes>...</invokes>.
+  const invokeOpenMatch = text.match(/<([\w:-]+:)?invokes\b[^>]*>/i);
+  let invokeScan = text;
+  if (invokeOpenMatch) {
+    const iclose = text.match(/<\/([\w:-]+:)?invokes>/i);
+    const istart = invokeOpenMatch.index + invokeOpenMatch[0].length;
+    const iend = iclose ? iclose.index : text.length;
+    invokeScan = text.substring(istart, iend);
+  }
+  const INVOKE_RE = /<([\w:-]+:)?invoke\s+[^>]*>([\s\S]*?)<\/([\w:-]+:)?invoke>/gi;
+  INVOKE_RE.lastIndex = 0;
+  const invokeCalls = [];
+  let im;
+  while ((im = INVOKE_RE.exec(invokeScan)) !== null) {
+    const asToolCall = im[0]
+      .replace(/<invoke\b/i, '<tool_call')
+      .replace(/<\/invoke>/i, '</tool_call>');
+    const inv = parseNativeXmlSingular(asToolCall);
+    if (inv && inv.name) invokeCalls.push(inv);
+  }
+  if (invokeCalls.length) return invokeCalls;
+
   // 2) Singular native XML: <tool_call name="x"><parameter>...</parameter></tool_call>
   //    (namespaced <antml:tool_call> supported via the name= fallback).
   const xmlMatch = text.match(/<([\w:-]+:)?tool_call\b[^>]*>([\s\S]*?)<\/([\w:-]+:)?tool_call>/i);

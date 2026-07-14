@@ -297,6 +297,37 @@ test('normalizeToolCall preserves special numeric literals', () => {
 });
 
 
+// Regression: OpenCode emits <invoke name="x">…</invoke>, which the proxy must
+// normalize like the native <tool_call> shape (client-agnostic contract).
+test('normalizeToolCall parses OpenCode <invoke> (singular, multi-tag)', () => {
+  const text = `<invoke name="read">
+  <parameter name="filePath" string="true">C:\\mango - Copia\\templates</parameter>
+</invoke>
+<invoke name="read">
+  <parameter name="filePath" string="true">C:\\mango - Copia\\static</parameter>
+</invoke>`;
+  const calls = normalizeToolCall(text);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].name, 'read');
+  assert.equal(calls[0].arguments.filePath, 'C:\\mango - Copia\\templates');
+  assert.equal(calls[1].arguments.filePath, 'C:\\mango - Copia\\static');
+});
+
+// Regression: OpenCode may also wrap multiple <invoke> tags in <invokes>…</invokes>.
+test('normalizeToolCall parses OpenCode <invokes> wrapper', () => {
+  const text = `<invokes>
+  <invoke name="read"><parameter name="filePath" string="true">C:\\a\\b.txt</parameter></invoke>
+  <invoke name="glob"><parameter name="pattern">*.py</parameter></invoke>
+</invokes>`;
+  const calls = normalizeToolCall(text);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].name, 'read');
+  assert.equal(calls[0].arguments.filePath, 'C:\\a\\b.txt');
+  assert.equal(calls[1].name, 'glob');
+  assert.equal(calls[1].arguments.pattern, '*.py');
+});
+
+
 // account (round-robin) to dilute per-account traffic and reduce ban risk, and
 // reset the web session when the account changes.
 test('selectAccountForSession round-robins across multiple ready accounts', () => {
