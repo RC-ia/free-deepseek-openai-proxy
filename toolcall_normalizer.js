@@ -164,6 +164,15 @@ function parseNativeXmlSingular(tag) {
   const { args, found } = collectParameters(tag);
 
   if (!found) {
+    // Bare <todos> array (OpenCode TodoWrite variant uses <todos> instead of
+    // <parameter name="todos">). Promote it to the todos argument.
+    const bareTodos = tag.match(/<todos\b[^>]*>([\s\S]*?)<\/todos>/i);
+    if (bareTodos) {
+      try {
+        const arr = JSON.parse(decodeHtmlEntities(bareTodos[1]).trim());
+        if (Array.isArray(arr)) return { name: name || 'TodoWrite', arguments: { todos: arr } };
+      } catch (e) { /* not JSON; fall through */ }
+    }
     // No <parameter> children: the tool-call body may be inline JSON, e.g.
     //   <tool_call name="x">{"todos":[...]}</tool_call>
     //   <tool_call>{"skill":"mangadex-flask-proxy"}</tool_call>   (name comes from JSON)

@@ -84,6 +84,45 @@ const ACCOUNT_CALL_COOLDOWN_MS = Number(process.env.DEEPSEEK_ACCOUNT_CALL_COOLDO
 const DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT = Number(process.env.DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT || 162131);
 const DEEPSEEK_CONTEXT_SAFETY_MARGIN = Number(process.env.DEEPSEEK_CONTEXT_SAFETY_MARGIN || 0.95);
 const DEEPSEEK_CHAT_CONTEXT_EFFECTIVE_LIMIT = Math.floor(DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT * DEEPSEEK_CONTEXT_SAFETY_MARGIN);
+
+// Localize well-known English error messages to Portuguese (pt-BR) so client
+// errors read naturally for the operator. Template placeholders (numbers,
+// status codes, snippets) are preserved. Unknown messages pass through.
+function localizeError(msg) {
+  if (!msg || typeof msg !== 'string') return msg;
+  const m = msg;
+  if (m.includes('Context window exceeded')) {
+    const over = m.match(/over by ~([\d,]+) chars/);
+    const pct = m.match(/([\d.]+)% of limit/);
+    return `Janela de contexto excedida: o prompt tem ${m.match(/prompt is ([\d,]+) chars/)?.[1] || '?'} caracteres, mas o limite do chat DeepSeek Web é de ~${DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT.toLocaleString('pt-BR')} caracteres (você estourou em ~${over ? over[1] : '?'} caracteres, ${pct ? pct[1] : '?'}% do limite). Comprima o histórico da conversa / anexos antes de tentar de novo.`;
+  }
+  if (m.includes('No valid DeepSeek auth accounts')) {
+    return 'Nenhuma conta DeepSeek válida. Rode npm run auth ou npm run auth:import.';
+  }
+  if (m.includes('All DeepSeek auth accounts are cooling down')) {
+    const s = m.match(/~(\d+)s/);
+    return `Todas as contas DeepSeek estão em espera. Tente de novo em ~${s ? s[1] : '?'}s ou importe uma conta nova com npm run auth:import.`;
+  }
+  if (m.includes('DeepSeek returned non-JSON')) {
+    const st = m.match(/HTTP (\d+)/);
+    return `O DeepSeek retornou uma resposta que não é JSON (HTTP ${st ? st[1] : '?'}). Rode npm run doctor. Primeiros caracteres: ${m.substring(m.indexOf('First chars:') >= 0 ? m.indexOf('First chars:') + 12 : 0)}`;
+  }
+  if (m.includes('DeepSeek auth/network error while creating PoW challenge')) {
+    const st = m.match(/HTTP (\d+)/);
+    return `Erro de autenticação/rede do DeepSeek ao criar o desafio PoW: HTTP ${st ? st[1] : '?'}. Rode npm run doctor. Se a autenticação expirou, rode npm run auth ou npm run auth:import.`;
+  }
+  if (m.includes('DeepSeek PoW response has no data.biz_data.challenge')) {
+    return 'A resposta PoW do DeepSeek não traz data.biz_data.challenge. A autenticação pode ter expirado, um captcha pode ser exigido, ou o DeepSeek mudou a Web API. Rode npm run doctor e depois npm run auth.';
+  }
+  if (m.includes('Could not create DeepSeek chat session') || m.includes('Could not recreate DeepSeek chat session')) {
+    const st = m.match(/HTTP (\d+)/);
+    return `Não foi possível ${m.includes('recreate') ? 'recriar' : 'criar'} a sessão de chat do DeepSeek (HTTP ${st ? st[1] : '?'}). A autenticação pode ter expirado ou estar bloqueada por captcha. Rode npm run doctor e depois npm run auth.`;
+  }
+  if (m.includes('Empty response') || m.includes('empty responses')) {
+    return 'O DeepSeek retornou uma resposta vazia (limite de taxa / throttle silencioso / "verifique se você é humano"). Tentando de novo com uma sessão nova.';
+  }
+  return msg;
+}
 let DS_CONFIG = {};
 let dsHeaders = {};
 const accounts = [];
@@ -1459,7 +1498,7 @@ const server = http.createServer(async (req, res) => {
                 res.writeHead(413, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({
                     error: {
-                        message: `Context window exceeded: prompt is ${promptChars} chars but the DeepSeek Web chat limit is ~${DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT} chars (you are over by ~${overBy} chars, ${ratio * 100}% of limit). Compress your conversation history / attachments before retrying.`,
+                        message: localizeError(`Context window exceeded: prompt is ${promptChars} chars but the DeepSeek Web chat limit is ~${DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT} chars (you are over by ~${overBy} chars, ${ratio * 100}% of limit). Compress your conversation history / attachments before retrying.`),
                         type: 'context_length_exceeded',
                         context_char_limit: DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT,
                         prompt_chars: promptChars,
@@ -1703,7 +1742,7 @@ const server = http.createServer(async (req, res) => {
         } catch (e) {
             console.log('[DS-API] Error:', e.message);
             res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: { message: e.message, type: 'server_error' } }));
+            res.end(JSON.stringify({ error: { message: localizeError(e.message), type: 'server_error' } }));
         }
     });
 });

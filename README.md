@@ -44,7 +44,9 @@ closes a gap in the upstream parser: DeepSeek Web emits native function calls as
 — which the original `parseToolCall()` could not parse (it expected a JSON body).
 The normalizer also understands the **OpenCode** tool-call shape (`<invoke name="…">…</invoke>`,
 optionally wrapped in `<invokes>…</invokes>`), mapping it onto the native parser so OpenCode and
-other clients that emit `<invoke>` work end-to-end through the proxy.
+other clients that emit `<invoke>` work end-to-end through the proxy. It also parses OpenCode's
+`TodoWrite` payload in either form — `<parameter name="todos">[…]</parameter>` **or** a bare
+`<todos>[…]</todos>` array — and always promotes it to a real `todos` array (not a string).
 The normalizer runs as a FAST-PATH inside `parseToolCall()` and converts that native
 shape (plus strict-JSON / fenced-JSON / legacy `TOOL_CALL:` variants) into a clean
 OpenAI `tool_calls` payload.
@@ -149,29 +151,47 @@ How it behaves:
 ## ⚡ Quick Start
 
 ```bash
-git clone https://github.com/RC-ia/FreeDeepseekAPI.git
-cd FreeDeepseekAPI
+git clone https://github.com/RC-ia/free-deepseek-openai-proxy.git
+cd free-deepseek-openai-proxy
+npm install        # installs dev deps (none at runtime; only needed for `npm test`)
 npm run auth
 npm start
 ```
 
-> ⚠️ Use the **fork** URL above (`RC-ia/FreeDeepseekAPI`), not the original ForgetMeAI repo.
+> ⚠️ Use the **fork** URL above (`RC-ia/free-deepseek-openai-proxy`). The runtime has **zero npm dependencies** — `npm install` only pulls the test runner.
 
-`npm run auth` opens the auth menu:
+### `npm run auth` (authorize / refresh login)
+
+Opens a separate Chrome profile so the proxy can reuse your real DeepSeek Web session. The menu shows:
+
+1. **Authorize / refresh DeepSeek login** ← choose this first
+2. Import auth file / cookies
+3. Show models and statuses
+4. Start the proxy (default)
+5. Exit
+
+Steps for option `1`:
 
 1. select option `1`;
-2. log in to DeepSeek in a separate Chrome profile;
-3. send a short message like `ok`;
-4. return to the terminal and press Enter.
+2. log in to DeepSeek in the separate Chrome profile that opens;
+3. send a short message like `ok` in that chat;
+4. return to the terminal and press Enter to capture the session.
 
-`npm start` shows the startup menu:
+### `npm start` (startup menu)
+
+After auth, run `npm start` — the menu shows:
 
 - `1` — authorize / refresh DeepSeek login
-- `2` — show models and statuses
-- `3` — start the proxy
-- `4` — exit
+- `2` — import auth file / cookies
+- `3` — show models and statuses
+- `4` — **start the proxy (default — just press Enter)**
+- `5` — exit
 
-For headless/CI run without menu:
+```bash
+npm start            # interactive menu; press Enter to start (option 4)
+```
+
+For headless/CI run without the menu (requires auth already captured):
 
 ```bash
 NON_INTERACTIVE=1 npm start
@@ -185,13 +205,37 @@ By default the server listens on:
 http://localhost:9655
 ```
 
+### ⚠️ Error 413 — full context (validated behavior)
+
+The DeepSeek Web chat caps **input** at ~162,131 chars (measured). Over that, DeepSeek Web returns an **empty** response (0 chars) instead of an error — which silently breaks agent loops. This proxy detects it **before** sending and returns a clean **HTTP 413** with usage info in Portuguese, so the client can compress its own history:
+
+```json
+{
+  "error": {
+    "message": "Janela de contexto excedida: o prompt tem 200006 caracteres, mas o limite do chat DeepSeek Web é de ~162.131 caracteres (você estourou em ~37875 caracteres, 123.36% do limite). Comprima o histórico da conversa / anexos antes de tentar de novo.",
+    "type": "context_length_exceeded",
+    "context_char_limit": 162131,
+    "prompt_chars": 200006,
+    "context_usage_ratio": 1.2336
+  }
+}
+```
+
+Tunables:
+
+- `DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT` (default `162131`) — hard char cap of the Web chat.
+- `DEEPSEEK_CONTEXT_SAFETY_MARGIN` (default `0.95`) — reject at 95% to avoid the empty-response failure mode.
+- `DEEPSEEK_CHAT_CONTEXT_EFFECTIVE_LIMIT` = `CHAR_LIMIT × SAFETY_MARGIN` (the reject threshold).
+
+> Note: the proxy does **not** auto-truncate. It surfaces the 413 and lets the client compress however it wants. (Replying with a 413 on a *compaction notice* is intentionally avoided to prevent a compress→413→compress loop.)
+
 ---
 
 ## 🪟 Windows run
 
 ```powershell
-git clone https://github.com/RC-ia/FreeDeepseekAPI.git
-cd FreeDeepseekAPI
+git clone https://github.com/RC-ia/free-deepseek-openai-proxy.git
+cd free-deepseek-openai-proxy
 npm run auth
 npm start
 ```
@@ -239,13 +283,13 @@ npm run auth
 2. Copy `deepseek-auth.json` to the VPS:
 
 ```bash
-scp deepseek-auth.json user@your-vps:/opt/FreeDeepseekAPI/deepseek-auth.json
+scp deepseek-auth.json user@your-vps:/opt/free-deepseek-openai-proxy/deepseek-auth.json
 ```
 
 3. On the VPS, import/verify the file and set safe permissions:
 
 ```bash
-cd /opt/FreeDeepseekAPI
+cd /opt/free-deepseek-openai-proxy
 npm run auth:import -- --input ./deepseek-auth.json
 npm run doctor -- --offline
 ```

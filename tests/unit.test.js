@@ -327,6 +327,25 @@ test('normalizeToolCall parses OpenCode <invokes> wrapper', () => {
   assert.equal(calls[1].arguments.pattern, '*.py');
 });
 
+// New behavior: OpenCode may wrap the todo array in a bare <todos> element
+// (instead of <parameter name="todos">). The normalizer must promote it.
+test('normalizeToolCall parses bare <todos> array (OpenCode variant)', () => {
+  const text = `<invoke name="TodoWrite">
+  <todos>[
+    { "content": "Create Flask server (app.py)", "status": "in_progress", "priority": "high" },
+    { "content": "Create HTML frontend", "status": "pending", "priority": "high" }
+  ]</todos>
+</invoke>`;
+  const calls = normalizeToolCall(text);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'TodoWrite');
+  assert.ok(Array.isArray(calls[0].arguments.todos), 'todos must be an array');
+  assert.equal(calls[0].arguments.todos.length, 2);
+  assert.equal(calls[0].arguments.todos[0].content, 'Create Flask server (app.py)');
+  assert.equal(calls[0].arguments.todos[0].status, 'in_progress');
+});
+
+
 
 // account (round-robin) to dilute per-account traffic and reduce ban risk, and
 // reset the web session when the account changes.
