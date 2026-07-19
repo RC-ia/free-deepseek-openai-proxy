@@ -145,6 +145,7 @@ How it behaves:
 - **Agent sessions:** a separate DeepSeek session per `user` / agent id
 - **Session recovery:** auto-reset of stale chains/sessions
 - **Zero dependencies:** Node.js 18+, no npm dependencies
+- **Large prompt upload:** prompts over the inline limit (~154k chars) are auto-uploaded as `.txt` file attachments for models with file support; models without file support get a clean 413
 
 ---
 
@@ -227,7 +228,7 @@ Tunables:
 - `DEEPSEEK_CONTEXT_SAFETY_MARGIN` (default `0.95`) — reject at 95% to avoid the empty-response failure mode.
 - `DEEPSEEK_CHAT_CONTEXT_EFFECTIVE_LIMIT` = `CHAR_LIMIT × SAFETY_MARGIN` (the reject threshold).
 
-> Note: the proxy does **not** auto-truncate. It surfaces the 413 and lets the client compress however it wants. (Replying with a 413 on a *compaction notice* is intentionally avoided to prevent a compress→413→compress loop.)
+> Note: for models with file support (`deepseek-reasoner`, `deepseek-chat`, etc.), the proxy now **automatically uploads** the oversized prompt as a `.txt` file attachment and sends a short placeholder prompt with `ref_file_ids` — so the request succeeds instead of failing with a 413. Models without file support (`deepseek-v4-pro` / expert) still get the 413. The proxy does **not** auto-truncate inline text. (Replying with a 413 on a *compaction notice* is intentionally avoided to prevent a compress→413→compress loop.)
 
 ---
 
@@ -254,8 +255,8 @@ If Chrome is not found, `npm run auth` now prints ready-made instructions for Wi
 ## 🐧 Linux / Chromium run
 
 ```bash
-git clone https://github.com/RC-ia/FreeDeepseekAPI.git
-cd FreeDeepseekAPI
+git clone https://github.com/RC-ia/free-deepseek-openai-proxy.git
+cd free-deepseek-openai-proxy
 CHROME_PATH=$(which chromium) npm run auth
 npm start
 ```
@@ -548,19 +549,21 @@ The proxy asks DeepSeek to return a strict JSON tool call, but also parses fallb
 
 ### Working aliases
 
-| Alias | Web mode | Reasoning | Web search | Comment |
-| --- | --- | --- | --- | --- |
-| `deepseek-chat` | `Быстрый` / `default` | no | no | basic chat |
-| `deepseek-v3` | `Быстрый` / `default` | no | no | compatible alias |
-| `deepseek-default` | `Быстрый` / `default` | no | no | compatible alias |
-| `deepseek-reasoner` | `Быстрый` / `default` | yes | no | `thinking_enabled=true` |
-| `deepseek-r1` | `Быстрый` / `default` | yes | no | R1-compatible alias |
-| `deepseek-chat-search` | `Быстрый` / `default` | no | yes | web search |
-| `deepseek-default-search` | `Быстрый` / `default` | no | yes | web search alias |
-| `deepseek-reasoner-search` | `Быстрый` / `default` | yes | yes | reasoning + search |
-| `deepseek-r1-search` | `Быстрый` / `default` | yes | yes | R1-compatible + search |
-| `deepseek-expert` | `Эксперт` / `expert` | no | no | Expert mode |
-| `deepseek-v4-pro` | `Эксперт` / `expert` | yes | no | Expert + reasoning |
+| Alias | Web mode | Reasoning | Web search | Files | Comment |
+| --- | --- | --- | --- | --- | --- |
+| `deepseek-chat` | `Быстрый` / `default` | no | no | ✅ | basic chat |
+| `deepseek-v3` | `Быстрый` / `default` | no | no | ✅ | compatible alias |
+| `deepseek-default` | `Быстрый` / `default` | no | no | ✅ | compatible alias |
+| `deepseek-reasoner` | `Быстрый` / `default` | yes | no | ✅ | `thinking_enabled=true` |
+| `deepseek-r1` | `Быстрый` / `default` | yes | no | ✅ | R1-compatible alias |
+| `deepseek-chat-search` | `Быстрый` / `default` | no | yes | ✅ | web search |
+| `deepseek-default-search` | `Быстрый` / `default` | no | yes | ✅ | web search alias |
+| `deepseek-reasoner-search` | `Быстрый` / `default` | yes | yes | ✅ | reasoning + search |
+| `deepseek-r1-search` | `Быстрый` / `default` | yes | yes | ✅ | R1-compatible + search |
+| `deepseek-expert` | `Эксперт` / `expert` | no | no | ❌ | Expert mode |
+| `deepseek-v4-pro` | `Эксперт` / `expert` | yes | no | ❌ | Expert + reasoning |
+
+Models with ✅ in the **Files** column accept large prompts as `.txt` file attachments (auto-uploaded by the proxy when the inline limit is exceeded). Models with ❌ return a 413 error instead.
 
 Full mapping:
 

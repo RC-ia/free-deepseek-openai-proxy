@@ -5,8 +5,8 @@
 This project reverse-engineers the **DeepSeek Web chat API** (`chat.deepseek.com`) to expose it as OpenAI/Anthropic-compatible local API endpoints. It allows compatible clients (Hermes agents, Claude Code, OpenAI SDK/Responses-style clients, custom scripts, etc.) to use DeepSeek's free web model as if it were a paid API — including tool calling, streaming, reasoning output, and multi-session support.
 
 **Server:** `host2.onldigital.com` (161.97.175.214)  
-**Proxy:** Node.js HTTP server on port 9654  
-**Model exposed:** `deepseek-web-v3` (DeepSeek V3 via web)
+**Proxy:** Node.js HTTP server on port 9655  
+**Model exposed:** Multiple aliases (`deepseek-chat`, `deepseek-reasoner`, `deepseek-v4-pro`, etc.) — see `/v1/models`
 
 ---
 
@@ -16,7 +16,7 @@ This project reverse-engineers the **DeepSeek Web chat API** (`chat.deepseek.com
 ┌──────────────┐     POST /v1/chat/completions     ┌──────────────────┐
 │              │ ──────────────────────────────►    │                  │
 │   Hermes     │    {messages, tools, user,         │  DeepSeek Proxy  │
-│   Agent      │     stream}                        │  (port 9654)     │
+│   Agent      │     stream}                        │  (port 9655)     │
 │   (Client)   │ ◄──────────────────────────────    │                  │
 │              │    {choices[].message.content      │  Node.js HTTP    │
 └──────────────┘     or tool_calls}                 │  Server          │
@@ -258,7 +258,7 @@ GET /
 Response:
 {
   "status": "ok",
-  "model": "deepseek-web-v3",
+  "model": "deepseek-chat",
   "agents": <int>        ← number of active agent sessions
 }
 ```
@@ -272,7 +272,7 @@ Response:
 {
   "data": [
     {
-      "id": "deepseek-web-v3",
+      "id": "deepseek-chat",
       "object": "model",
       "created": <timestamp>,
       "owned_by": "deepseek-web"
@@ -316,7 +316,7 @@ Response (non-stream, stream=false):
   "id": "ds-<timestamp>",
   "object": "chat.completion",
   "created": <unix_ts>,
-  "model": "deepseek-web-v3",
+  "model": "deepseek-chat",
   "choices": [
     {
       "index": 0,
@@ -511,8 +511,8 @@ Remote Hermes agents should set the `user` field in their requests for named ses
 ```yaml
 # In remote agent config
 model:
-  base_url: http://161.97.175.214:9654/v1
-  model: deepseek-web-v3
+  base_url: http://161.97.175.214:9655/v1
+  model: deepseek-chat
 ```
 
 The proxy uses `user` from the request body. If not set, it falls back to the client's IP as the session key.
@@ -656,10 +656,10 @@ const DS_CONFIG = {
 
 ```yaml
 model:
-  default: deepseek-web-v3
+  default: deepseek-chat
   provider: custom
-  base_url: http://127.0.0.1:9654/v1
-  model: deepseek-web-v3
+  base_url: http://127.0.0.1:9655/v1
+  model: deepseek-chat
 providers: {}
 fallback_providers: []
 ```
@@ -677,23 +677,25 @@ fallback_providers: []
 ## 8. Running the Proxy
 
 ```bash
-# Start
-node /root/.hermes/profiles/security-guy/scripts/deepseek-api-server.js
+# Start (from the project root)
+npm start
+# or headless:
+NON_INTERACTIVE=1 npm start
 
 # Output
-[DS-API] Server on http://0.0.0.0:9654 (multi-agent sessions enabled)
+[DS-API] Server on http://0.0.0.0:9655 (multi-agent sessions enabled)
 [DS-API] POST /v1/chat/completions (stream=true|false)
 [DS-API] GET  /v1/sessions — list active agent sessions
 [DS-API] POST /reset-session?agent=<id> — reset agent's session
 [DS-API] POST /reset-session?agent=all — reset ALL sessions
 
 # Test
-curl -s http://127.0.0.1:9654/health
-curl -s http://127.0.0.1:9654/v1/models
-curl -s http://127.0.0.1:9654/v1/sessions
+curl -s http://127.0.0.1:9655/health
+curl -s http://127.0.0.1:9655/v1/models
+curl -s http://127.0.0.1:9655/v1/sessions
 
 # Chat
-curl -s http://127.0.0.1:9654/v1/chat/completions \
+curl -s http://127.0.0.1:9655/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"hello"}],"stream":false}'
 ```
@@ -758,9 +760,11 @@ Error response format:
 
 | File | Path |
 |---|---|
-| Proxy server | `/root/.hermes/profiles/security-guy/scripts/deepseek-api-server.js` |
-| Security Guy SOUL | `/root/.hermes/profiles/security-guy/SOUL.md` |
-| Security Guy config | `/root/.hermes/profiles/security-guy/config.yaml` |
-| Gateway logs | `/root/.hermes/profiles/security-guy/logs/gateway.log` |
-| Agent logs | `/root/.hermes/profiles/security-guy/logs/agent.log` |
-| Error logs | `/root/.hermes/profiles/security-guy/logs/errors.log` |
+| Proxy server | `./server.js` |
+| Tool-call normalizer | `./toolcall_normalizer.js` |
+| Auth example | `./auth.example.json` |
+| Multi-account folder | `./accounts/*.json` |
+| Auth scripts | `./scripts/auth.js`, `./scripts/auth_import.js`, `./scripts/deepseek_chrome_auth.js` |
+| Diagnostics | `./scripts/doctor.js` |
+| Tests | `./tests/unit.test.js`, `./tests/failover.test.js` |
+| API documentation | `./docs/api-documentation.md` |
