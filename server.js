@@ -355,6 +355,106 @@ async function solvePOW(challenge, config = DS_CONFIG) {
     return Math.floor(ans);
 }
 
+// Upload a large prompt as a .txt file attachment to DeepSeek Web.
+// Returns the file_id (string) for use in ref_file_ids.
+// Flow: PoW challenge (target=upload_file) → solve → multipart POST → poll fetch_files.
+// Requires Node 18+ (native fetch, FormData, Blob).
+async function uploadPromptAsFile(promptText, modelCfg, account, agentTag) {
+    const dsHeaders = account.headers;
+
+    // 1. PoW challenge scoped to the upload endpoint
+    const cr = await fetch('https://chat.deepseek.com/api/v0/chat/create_pow_challenge', {
+        method: 'POST', headers: dsHeaders,
+        body: JSON.stringify({ target_path: '/api/v0/file/upload_file' })
+    });
+    if (!cr.ok) throw new Error(`PoW challenge for upload failed: HTTP ${cr.status}`);
+    const chalText = await cr.text();
+    let chalJson;
+    try { chalJson = JSON.parse(chalText); }
+    catch { throw new Error(`Non-JSON PoW response for upload: ${chalText.substring(0, 120)}`); }
+    const challenge = chalJson?.data?.biz_data?.challenge;
+    if (!challenge) throw new Error('No challenge in PoW response for upload_file. Auth may be expired.');
+
+    // 2. Solve PoW
+    const answer = await solvePOW(challenge, account.config);
+    const powB64 = Buffer.from(JSON.stringify({
+        algorithm: challenge.algorithm, challenge: challenge.challenge,
+        salt: challenge.salt, answer,
+        signature: challenge.signature, target_path: '/api/v0/file/upload_file'
+    })).toString('base64');
+
+    // 3. Multipart upload — strip Content-Type so fetch sets the multipart boundary
+    const uploadHeaders = { ...dsHeaders };
+    delete uploadHeaders['Content-Type'];
+    delete uploadHeaders['content-type'];
+    Object.assign(uploadHeaders, {
+        'X-DS-PoW-Response': powB64,
+        'x-thinking-enabled': modelCfg.thinking_enabled ? '1' : '0',
+        'x-model-type': modelCfg.model_type || 'default',
+        'x-file-size': String(Buffer.byteLength(promptText, 'utf8')),
+    });
+
+    const fileName = `prompt_${Date.now()}.txt`;
+    const formData = new FormData();
+    formData.append('file', new Blob([promptText], { type: 'text/plain' }), fileName);
+
+    const upResp = await fetch('https://chat.deepseek.com/api/v0/file/upload_file', {
+        method: 'POST', headers: uploadHeaders, body: formData,
+    });
+    const upText = await upResp.text();
+    if (!upResp.ok) throw new Error(`File upload HTTP ${upResp.status}: ${upText.substring(0, 200)}`);
+
+    let upJson;
+    try { upJson = JSON.parse(upText); }
+    catch { throw new Error(`Upload returned non-JSON: ${upText.substring(0, 200)}`); }
+
+    const bizCode = upJson?.data?.biz_code;
+    if (bizCode !== 0) throw new Error(`Upload biz_code=${bizCode}: ${upJson?.data?.biz_msg || 'unknown'}`);
+
+    const bizData = upJson?.data?.biz_data;
+    const fileId = bizData?.id;
+    if (!fileId) throw new Error('Upload succeeded but no file id returned');
+
+    console.log(`${agentTag} Uploaded prompt as file ${fileId} (${Buffer.byteLength(promptText, 'utf8')} bytes)`);
+
+    // 4. If already parsed, return immediately; otherwise poll fetch_files
+    const initialStatus = String(bizData?.status || '').toLowerCase();
+    if (initialStatus === 'success' || initialStatus === 'parsed') {
+        console.log(`${agentTag} File ${fileId} already parsed (status=${bizData.status})`);
+        return fileId;
+    }
+
+    const MAX_POLLS = 20; // 20 × 3 s = 60 s max wait
+    for (let i = 0; i < MAX_POLLS; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+        try {
+            const pollResp = await fetch(
+                `https://chat.deepseek.com/api/v0/file/fetch_files?file_ids=${encodeURIComponent(fileId)}`,
+                { method: 'GET', headers: dsHeaders }
+            );
+            if (!pollResp.ok) { console.log(`${agentTag} File poll HTTP ${pollResp.status}`); continue; }
+            const pollJson = await pollResp.json();
+            if (pollJson?.data?.biz_code !== 0) continue;
+            const files = pollJson?.data?.biz_data?.files || [];
+            const fi = files.find(f => String(f.id) === String(fileId));
+            if (!fi) continue;
+            const st = String(fi.status || '').toLowerCase();
+            if (st === 'success' || st === 'parsed') {
+                console.log(`${agentTag} File ${fileId} parsed OK (poll ${i + 1})`);
+                return fileId;
+            }
+            if (st === 'failed' || st === 'error' || st === 'content_filter' || st === 'content_empty') {
+                throw new Error(`File parse failed: status=${fi.status} error_code=${fi.error_code || '?'}`);
+            }
+            console.log(`${agentTag} File ${fileId} status=${fi.status} (poll ${i + 1}/${MAX_POLLS})`);
+        } catch (pollErr) {
+            if (pollErr.message.startsWith('File parse failed')) throw pollErr;
+            console.log(`${agentTag} File poll error: ${pollErr.message}`);
+        }
+    }
+    throw new Error(`File ${fileId} not parsed after ${MAX_POLLS * 3}s`);
+}
+
 const MODEL_CONFIGS = {
     // DeepSeek Web real model_type: default / UI name: "Быстрый".
     // Public model family: DeepSeek-V3.2-Exp chat mode (fast, no visible reasoning).
@@ -513,7 +613,7 @@ function resolveModelConfig(model) {
 function isKnownModel(model) { return Object.prototype.hasOwnProperty.call(MODEL_CONFIGS, String(model || '').toLowerCase()); }
 function isSupportedModel(model) { return resolveModelConfig(model).supported === true; }
 
-async function askDeepSeekStream(prompt, agentId, model = 'deepseek-default') {
+async function askDeepSeekStream(prompt, agentId, model = 'deepseek-default', refFileIds = []) {
     const modelCfg = resolveModelConfig(model);
     const session = getOrCreateAgentSession(agentId);
     const account = await selectAccountForSession(session);
@@ -592,7 +692,7 @@ async function askDeepSeekStream(prompt, agentId, model = 'deepseek-default') {
             chat_session_id: session.id,
             parent_message_id: session.parentMessageId,
             model_type: modelCfg.model_type,
-            prompt: prompt, ref_file_ids: [],
+            prompt: prompt, ref_file_ids: refFileIds,
             thinking_enabled: modelCfg.thinking_enabled, search_enabled: modelCfg.search_enabled,
             action: null, preempt: false,
         })
@@ -637,7 +737,7 @@ async function askDeepSeekStream(prompt, agentId, model = 'deepseek-default') {
                     chat_session_id: session.id,
                     parent_message_id: null,
                     model_type: modelCfg.model_type,
-                    prompt: prompt, ref_file_ids: [],
+                    prompt: prompt, ref_file_ids: refFileIds,
                     thinking_enabled: modelCfg.thinking_enabled, search_enabled: modelCfg.search_enabled,
                     action: null, preempt: false,
                 })
@@ -1485,33 +1585,50 @@ const server = http.createServer(async (req, res) => {
             const promptEstTokens = Math.ceil(promptChars / 4);
             console.log(`${agentTag} >>> sending prompt to DeepSeek: ~${promptChars} chars (~${promptEstTokens} tokens est.) | session.msgs=${session.history.length} | model=${requestedModel}`);
 
-            // Reject BEFORE sending if the prompt exceeds the chat context limit.
-            // The DeepSeek Web chat caps input at ~DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT
-            // chars; over that it returns an empty response (0 chars) instead of an
-            // error. Surface a 413 with usage info so the client can compress its
-            // own context however it wants (proxy does not auto-truncate).
+            // If the prompt exceeds the inline text limit, try uploading it as a
+            // file attachment for models that support files (deepseek-reasoner, etc.).
+            // Models without file support (deepseek-v4-pro / expert) still get a 413.
+            let refFileIds = [];
+            let effectivePrompt = fullPrompt;
             if (promptChars > DEEPSEEK_CHAT_CONTEXT_EFFECTIVE_LIMIT) {
-                const overBy = promptChars - DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT;
-                const ratio = Number((promptChars / DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT).toFixed(4));
-                const usage = buildUsage(fullPrompt, '', '');
-                console.log(`${agentTag} prompt ${promptChars} chars exceeds chat context limit ${DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT} (effective ${DEEPSEEK_CHAT_CONTEXT_EFFECTIVE_LIMIT}) — returning 413`);
-                res.writeHead(413, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({
-                    error: {
-                        message: localizeError(`Context window exceeded: prompt is ${promptChars} chars but the DeepSeek Web chat limit is ~${DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT} chars (you are over by ~${overBy} chars, ${ratio * 100}% of limit). Compress your conversation history / attachments before retrying.`),
-                        type: 'context_length_exceeded',
-                        context_char_limit: DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT,
-                        prompt_chars: promptChars,
-                        prompt_tokens_est: promptEstTokens,
-                        context_usage_ratio: ratio,
-                        usage
+                const modelCfgForUpload = resolveModelConfig(requestedModel);
+                if (modelCfgForUpload?.capabilities?.files) {
+                    console.log(`${agentTag} prompt ${promptChars} chars > inline limit ${DEEPSEEK_CHAT_CONTEXT_EFFECTIVE_LIMIT} — uploading as file attachment (model=${requestedModel})`);
+                    try {
+                        const uploadSession = getOrCreateAgentSession(agentId);
+                        const uploadAccount = await selectAccountForSession(uploadSession);
+                        const fileId = await uploadPromptAsFile(fullPrompt, modelCfgForUpload, uploadAccount, agentTag);
+                        refFileIds = [fileId];
+                        effectivePrompt = 'The full conversation context and instructions are in the attached file. Please read it carefully and respond accordingly.';
+                        console.log(`${agentTag} Prompt uploaded as file ${fileId} — sending short prompt with ref_file_ids`);
+                    } catch (uploadErr) {
+                        console.log(`${agentTag} File upload failed (${uploadErr.message}) — falling back to 413`);
                     }
-                }));
-                return;
+                }
+                // If upload didn't happen (no file support or upload failed), return 413
+                if (refFileIds.length === 0) {
+                    const overBy = promptChars - DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT;
+                    const ratio = Number((promptChars / DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT).toFixed(4));
+                    const usage = buildUsage(fullPrompt, '', '');
+                    console.log(`${agentTag} prompt ${promptChars} chars exceeds chat context limit ${DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT} (effective ${DEEPSEEK_CHAT_CONTEXT_EFFECTIVE_LIMIT}) — returning 413`);
+                    res.writeHead(413, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({
+                        error: {
+                            message: localizeError(`Context window exceeded: prompt is ${promptChars} chars but the DeepSeek Web chat limit is ~${DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT} chars (you are over by ~${overBy} chars, ${ratio * 100}% of limit). Compress your conversation history / attachments before retrying.`),
+                            type: 'context_length_exceeded',
+                            context_char_limit: DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT,
+                            prompt_chars: promptChars,
+                            prompt_tokens_est: promptEstTokens,
+                            context_usage_ratio: ratio,
+                            usage
+                        }
+                    }));
+                    return;
+                }
             }
 
             const startTime = Date.now();
-            const { resp: dsResp } = await askDeepSeekStream(fullPrompt, agentId, requestedModel);
+            const { resp: dsResp } = await askDeepSeekStream(effectivePrompt, agentId, requestedModel, refFileIds);
 
             // Process streaming response from DeepSeek — returns { content, reasoningContent, messageId, finishReason }
             async function readDeepSeekResponse(readable) {

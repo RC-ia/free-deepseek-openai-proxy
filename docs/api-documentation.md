@@ -116,7 +116,7 @@ Body:
   "parent_message_id": <int|null>,    ← for threading (null = first message)
   "model_type": "default",
   "prompt": "<user message text>",
-  "ref_file_ids": [],
+  "ref_file_ids": [],              ← or ["<file_id>"] when prompt was uploaded as attachment
   "thinking_enabled": false,
   "search_enabled": false,
   "action": null,
@@ -138,7 +138,92 @@ data: {"p": "response/done"}
 - The first SSE event (metadata) contains the first characters of content; subsequent `response/content` events append more
 - On session reuse, the first 2 characters ("TO") arrive in the metadata content, the rest in content events
 
-### 2.4 Proof-of-Work (SHA3 Wasm)
+### 2.4 File Upload (Large Prompt Attachment)
+
+When a prompt exceeds the inline text limit (~162k chars / ~40k tokens), the proxy can upload it as a `.txt` file attachment for models that support files (`deepseek-reasoner`, `deepseek-chat`, etc.). Models without file support (`deepseek-v4-pro` / expert mode) still receive a 413 error.
+
+```
+POST https://chat.deepseek.com/api/v0/file/upload_file
+
+Headers:
+  ...same base headers...
+  X-DS-PoW-Response: <base64 PoW answer with target_path="/api/v0/file/upload_file">
+  x-thinking-enabled: "1"|"0"       ← matches model's thinking_enabled
+  x-model-type: "default"|"expert"  ← model_type from MODEL_CONFIGS
+  x-file-size: <bytes>              ← file size in bytes
+  Content-Type: multipart/form-data  ← set automatically by FormData
+
+Body: multipart/form-data
+  file: <Blob> (text/plain, named prompt_<timestamp>.txt)
+
+Response:
+{
+  "data": {
+    "biz_code": 0,
+    "biz_data": {
+      "id": "<file_id>",          ← used in ref_file_ids for completion
+      "status": "parsing"|"success",
+      "file_name": "prompt_1234567890.txt",
+      "file_size": 123456,
+      "token_usage": <int>,
+      "audit_result": "pass"|"filter"
+    }
+  }
+}
+```
+
+**File Parse Polling:**
+
+After upload, the file is parsed asynchronously. Poll until `status === "success"`:
+
+```
+GET https://chat.deepseek.com/api/v0/file/fetch_files?file_ids=<file_id>
+
+Headers: Same base headers (no PoW required for polling)
+
+Response:
+{
+  "data": {
+    "biz_code": 0,
+    "biz_data": {
+      "files": [
+        {
+          "id": "<file_id>",
+          "status": "parsing"|"success"|"failed"|"content_filter"|"content_empty",
+          "file_name": "...",
+          "token_usage": <int>,
+          "error_code": <int|null>
+        }
+      ]
+    }
+  }
+}
+```
+
+**Key Points:**
+- The PoW challenge for upload uses `target_path: "/api/v0/file/upload_file"` (NOT `/api/v0/chat/completion`)
+- File attachments are **text-extraction only** ("仅识别文字") — ideal for `.txt` prompts
+- Max file size and count are governed by DeepSeek's remote config (`uploadMaxMBSize`, `uploadMaxFiles`)
+- The proxy polls every 3 seconds, up to 60 seconds max (20 polls)
+- On parse failure (`failed`, `content_filter`, `content_empty`), the proxy falls back to a 413 error
+- The uploaded file's `id` is passed as `ref_file_ids: ["<file_id>"]` in the chat completion body
+
+**Automatic Behavior (Proxy-Side):**
+
+The proxy handles this transparently — clients don't need to change anything:
+
+1. Client sends a large prompt via `/v1/chat/completions`
+2. Proxy detects `promptChars > DEEPSEEK_CHAT_CONTEXT_EFFECTIVE_LIMIT` (~154k chars)
+3. If the requested model has `capabilities.files: true`:
+   - Uploads the full prompt as a `.txt` file
+   - Waits for parse completion
+   - Sends a short placeholder prompt + `ref_file_ids` to DeepSeek
+4. If the model has `files: false` (e.g., `deepseek-v4-pro`):
+   - Returns HTTP 413 with `context_length_exceeded` (same as before)
+5. If upload/parse fails for any reason:
+   - Falls back to HTTP 413 with the original error message
+
+### 2.5 Proof-of-Work (SHA3 Wasm)
 
 Each API call requires solving a PoW challenge using a WASM module:
 
