@@ -332,11 +332,17 @@ function getOrCreateAgentSession(agentId) {
     return sessions.get(agentId);
 }
 
+// WASM module cache: avoid re-downloading the PoW WASM binary on every call.
+let _cachedWasmModule = null;
+let _cachedWasmUrl = null;
 async function solvePOW(challenge, config = DS_CONFIG) {
-    const resp = await fetch(config.wasmUrl);
-    const wasmBytes = await resp.arrayBuffer();
-    const mod = await WebAssembly.instantiate(wasmBytes, { wbg: {} });
-    const e = mod.instance.exports;
+    if (!_cachedWasmModule || _cachedWasmUrl !== config.wasmUrl) {
+        const resp = await fetch(config.wasmUrl);
+        const wasmBytes = await resp.arrayBuffer();
+        _cachedWasmModule = await WebAssembly.instantiate(wasmBytes, { wbg: {} });
+        _cachedWasmUrl = config.wasmUrl;
+    }
+    const e = _cachedWasmModule.instance.exports;
     const encoder = new TextEncoder();
     const prefix = challenge.salt + '_' + challenge.expire_at + '_';
     const cBytes = encoder.encode(challenge.challenge);
@@ -358,14 +364,36 @@ async function solvePOW(challenge, config = DS_CONFIG) {
 // Upload a large prompt as a .txt file attachment to DeepSeek Web.
 // Returns the file_id (string) for use in ref_file_ids.
 // Flow: PoW challenge (target=upload_file) → solve → multipart POST → poll fetch_files.
-// Requires Node 18+ (native fetch, FormData, Blob).
+// Zero-dep multipart: builds the body manually (no FormData/Blob globals needed — Node 18 safe).
+const UPLOAD_FETCH_TIMEOUT_MS = 30000; // 30s hard timeout on upload HTTP calls
+const POLL_FETCH_TIMEOUT_MS = 10000;   // 10s per poll request
+
+function buildMultipartBody(fieldName, fileName, content, contentType) {
+    const boundary = '----DSProxyBoundary' + Date.now().toString(36) + Math.random().toString(36).slice(2);
+    const preamble = `--${boundary}
+\nContent-Disposition: form-data; name="${fieldName}"; filename="${fileName}"
+\nContent-Type: ${contentType}
+\n
+\n`;
+    const postamble = `
+\n--${boundary}--
+\n`;
+    const body = Buffer.concat([
+        Buffer.from(preamble, 'utf8'),
+        Buffer.from(content, 'utf8'),
+        Buffer.from(postamble, 'utf8'),
+    ]);
+    return { body, contentType: `multipart/form-data; boundary=${boundary}` };
+}
+
 async function uploadPromptAsFile(promptText, modelCfg, account, agentTag) {
     const dsHeaders = account.headers;
 
     // 1. PoW challenge scoped to the upload endpoint
     const cr = await fetch('https://chat.deepseek.com/api/v0/chat/create_pow_challenge', {
         method: 'POST', headers: dsHeaders,
-        body: JSON.stringify({ target_path: '/api/v0/file/upload_file' })
+        body: JSON.stringify({ target_path: '/api/v0/file/upload_file' }),
+        signal: AbortSignal.timeout(UPLOAD_FETCH_TIMEOUT_MS),
     });
     if (!cr.ok) throw new Error(`PoW challenge for upload failed: HTTP ${cr.status}`);
     const chalText = await cr.text();
@@ -383,23 +411,23 @@ async function uploadPromptAsFile(promptText, modelCfg, account, agentTag) {
         signature: challenge.signature, target_path: '/api/v0/file/upload_file'
     })).toString('base64');
 
-    // 3. Multipart upload — strip Content-Type so fetch sets the multipart boundary
+    // 3. Multipart upload — build body manually (no FormData/Blob globals needed)
     const uploadHeaders = { ...dsHeaders };
     delete uploadHeaders['Content-Type'];
     delete uploadHeaders['content-type'];
+    const fileName = `prompt_${Date.now()}.txt`;
+    const { body: multipartBody, contentType: multipartType } = buildMultipartBody('file', fileName, promptText, 'text/plain');
     Object.assign(uploadHeaders, {
+        'Content-Type': multipartType,
         'X-DS-PoW-Response': powB64,
         'x-thinking-enabled': modelCfg.thinking_enabled ? '1' : '0',
         'x-model-type': modelCfg.model_type || 'default',
         'x-file-size': String(Buffer.byteLength(promptText, 'utf8')),
     });
 
-    const fileName = `prompt_${Date.now()}.txt`;
-    const formData = new FormData();
-    formData.append('file', new Blob([promptText], { type: 'text/plain' }), fileName);
-
     const upResp = await fetch('https://chat.deepseek.com/api/v0/file/upload_file', {
-        method: 'POST', headers: uploadHeaders, body: formData,
+        method: 'POST', headers: uploadHeaders, body: multipartBody,
+        signal: AbortSignal.timeout(UPLOAD_FETCH_TIMEOUT_MS),
     });
     const upText = await upResp.text();
     if (!upResp.ok) throw new Error(`File upload HTTP ${upResp.status}: ${upText.substring(0, 200)}`);
@@ -430,7 +458,7 @@ async function uploadPromptAsFile(promptText, modelCfg, account, agentTag) {
         try {
             const pollResp = await fetch(
                 `https://chat.deepseek.com/api/v0/file/fetch_files?file_ids=${encodeURIComponent(fileId)}`,
-                { method: 'GET', headers: dsHeaders }
+                { method: 'GET', headers: dsHeaders, signal: AbortSignal.timeout(POLL_FETCH_TIMEOUT_MS) }
             );
             if (!pollResp.ok) { console.log(`${agentTag} File poll HTTP ${pollResp.status}`); continue; }
             const pollJson = await pollResp.json();
@@ -453,6 +481,32 @@ async function uploadPromptAsFile(promptText, modelCfg, account, agentTag) {
         }
     }
     throw new Error(`File ${fileId} not parsed after ${MAX_POLLS * 3}s`);
+}
+
+// Best-effort cleanup: try to delete an uploaded file after the completion finishes.
+// DeepSeek Web may auto-expire files, but this prevents accumulation on heavy use.
+// Endpoint is inferred (not documented); failures are logged and ignored.
+async function tryDeleteUploadedFile(fileId, headers, agentTag) {
+    if (!fileId) return;
+    try {
+        const resp = await fetch('https://chat.deepseek.com/api/v0/file/delete_file', {
+            method: 'POST', headers,
+            body: JSON.stringify({ file_id: fileId }),
+            signal: AbortSignal.timeout(5000),
+        });
+        if (resp.ok) {
+            const j = await resp.json().catch(() => null);
+            if (j?.data?.biz_code === 0) {
+                console.log(`${agentTag} Cleaned up uploaded file ${fileId}`);
+            } else {
+                console.log(`${agentTag} File cleanup ${fileId}: biz_code=${j?.data?.biz_code} (ignored)`);
+            }
+        } else {
+            console.log(`${agentTag} File cleanup ${fileId}: HTTP ${resp.status} (ignored)`);
+        }
+    } catch (e) {
+        console.log(`${agentTag} File cleanup ${fileId} failed: ${e.message} (ignored)`);
+    }
 }
 
 const MODEL_CONFIGS = {
@@ -613,10 +667,10 @@ function resolveModelConfig(model) {
 function isKnownModel(model) { return Object.prototype.hasOwnProperty.call(MODEL_CONFIGS, String(model || '').toLowerCase()); }
 function isSupportedModel(model) { return resolveModelConfig(model).supported === true; }
 
-async function askDeepSeekStream(prompt, agentId, model = 'deepseek-default', refFileIds = []) {
+async function askDeepSeekStream(prompt, agentId, model = 'deepseek-default', refFileIds = [], preferredAccount = null) {
     const modelCfg = resolveModelConfig(model);
     const session = getOrCreateAgentSession(agentId);
-    const account = await selectAccountForSession(session);
+    const account = preferredAccount || await selectAccountForSession(session);
     const dsHeaders = account.headers;
     account.lastUsedAt = Date.now();
     // Per-call cooldown: hold this account in "wait" so rapid-fire clients
@@ -1590,19 +1644,21 @@ const server = http.createServer(async (req, res) => {
             // Models without file support (deepseek-v4-pro / expert) still get a 413.
             let refFileIds = [];
             let effectivePrompt = fullPrompt;
+            let uploadAccount = null; // pin the account used for upload so completion uses the same one
             if (promptChars > DEEPSEEK_CHAT_CONTEXT_EFFECTIVE_LIMIT) {
                 const modelCfgForUpload = resolveModelConfig(requestedModel);
                 if (modelCfgForUpload?.capabilities?.files) {
                     console.log(`${agentTag} prompt ${promptChars} chars > inline limit ${DEEPSEEK_CHAT_CONTEXT_EFFECTIVE_LIMIT} — uploading as file attachment (model=${requestedModel})`);
                     try {
                         const uploadSession = getOrCreateAgentSession(agentId);
-                        const uploadAccount = await selectAccountForSession(uploadSession);
+                        uploadAccount = await selectAccountForSession(uploadSession);
                         const fileId = await uploadPromptAsFile(fullPrompt, modelCfgForUpload, uploadAccount, agentTag);
                         refFileIds = [fileId];
                         effectivePrompt = 'The full conversation context and instructions are in the attached file. Please read it carefully and respond accordingly.';
                         console.log(`${agentTag} Prompt uploaded as file ${fileId} — sending short prompt with ref_file_ids`);
                     } catch (uploadErr) {
                         console.log(`${agentTag} File upload failed (${uploadErr.message}) — falling back to 413`);
+                        uploadAccount = null;
                     }
                 }
                 // If upload didn't happen (no file support or upload failed), return 413
@@ -1628,7 +1684,17 @@ const server = http.createServer(async (req, res) => {
             }
 
             const startTime = Date.now();
-            const { resp: dsResp } = await askDeepSeekStream(effectivePrompt, agentId, requestedModel, refFileIds);
+            const { resp: dsResp } = await askDeepSeekStream(effectivePrompt, agentId, requestedModel, refFileIds, uploadAccount);
+
+            // Best-effort cleanup of uploaded file after completion finishes (non-blocking)
+            if (refFileIds.length > 0 && uploadAccount) {
+                const cleanupFileId = refFileIds[0];
+                const cleanupHeaders = uploadAccount.headers;
+                const cleanupTag = agentTag;
+                // Fire-and-forget: don't block the response stream
+                dsResp.body?.getReader?.()?.cancel?.().catch?.(() => {});
+                setTimeout(() => tryDeleteUploadedFile(cleanupFileId, cleanupHeaders, cleanupTag), 2000);
+            }
 
             // Process streaming response from DeepSeek — returns { content, reasoningContent, messageId, finishReason }
             async function readDeepSeekResponse(readable) {
