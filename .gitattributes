@@ -1,0 +1,12 @@
+# Normalize line endings to LF on checkin; check out as LF everywhere.
+# Prevents CRLF/LF churn between Windows (WSL host) and Linux environments.
+* text=auto eol=lf
+
+# Explicitly mark binary files so they are never touched by text normalization.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.wasm binary
+*.pdf binary
