@@ -551,17 +551,17 @@ The proxy asks DeepSeek to return a strict JSON tool call, but also parses fallb
 
 | Alias | Web mode | Reasoning | Web search | Files | Comment |
 | --- | --- | --- | --- | --- | --- |
-| `deepseek-chat` | `Быстрый` / `default` | no | no | ✅ | basic chat |
-| `deepseek-v3` | `Быстрый` / `default` | no | no | ✅ | compatible alias |
-| `deepseek-default` | `Быстрый` / `default` | no | no | ✅ | compatible alias |
-| `deepseek-reasoner` | `Быстрый` / `default` | yes | no | ✅ | `thinking_enabled=true` |
-| `deepseek-r1` | `Быстрый` / `default` | yes | no | ✅ | R1-compatible alias |
-| `deepseek-chat-search` | `Быстрый` / `default` | no | yes | ✅ | web search |
-| `deepseek-default-search` | `Быстрый` / `default` | no | yes | ✅ | web search alias |
-| `deepseek-reasoner-search` | `Быстрый` / `default` | yes | yes | ✅ | reasoning + search |
-| `deepseek-r1-search` | `Быстрый` / `default` | yes | yes | ✅ | R1-compatible + search |
-| `deepseek-expert` | `Эксперт` / `expert` | no | no | ❌ | Expert mode |
-| `deepseek-v4-pro` | `Эксперт` / `expert` | yes | no | ❌ | Expert + reasoning |
+| `deepseek-chat` | `Fast` / `default` | no | no | ✅ | basic chat |
+| `deepseek-v3` | `Fast` / `default` | no | no | ✅ | compatible alias |
+| `deepseek-default` | `Fast` / `default` | no | no | ✅ | compatible alias |
+| `deepseek-reasoner` | `Fast` / `default` | yes | no | ✅ | `thinking_enabled=true` |
+| `deepseek-r1` | `Fast` / `default` | yes | no | ✅ | R1-compatible alias |
+| `deepseek-chat-search` | `Fast` / `default` | no | yes | ✅ | web search |
+| `deepseek-default-search` | `Fast` / `default` | no | yes | ✅ | web search alias |
+| `deepseek-reasoner-search` | `Fast` / `default` | yes | yes | ✅ | reasoning + search |
+| `deepseek-r1-search` | `Fast` / `default` | yes | yes | ✅ | R1-compatible + search |
+| `deepseek-expert` | `Expert` / `expert` | no | no | ❌ | Expert mode |
+| `deepseek-v4-pro` | `Expert` / `expert` | yes | no | ❌ | Expert + reasoning |
 
 Models with ✅ in the **Files** column accept large prompts as `.txt` file attachments (auto-uploaded by the proxy when the inline limit is exceeded). Models with ❌ return a 413 error instead.
 
@@ -571,13 +571,13 @@ Full mapping:
 curl http://localhost:9655/v1/model-capabilities
 ```
 
-Per the official DeepSeek V4 Preview page, `deepseek-chat` and `deepseek-reasoner` currently route to `deepseek-v4-flash` non-thinking/thinking. In `chat.deepseek.com` itself, the direct stream does not return the exact checkpoint name (`model: ""`), so the proxy records both the web mode (`default` / `Быстрый`) and the current official routing (`DeepSeek-V4-Flash`).
+Per the official DeepSeek V4 Preview page, `deepseek-chat` and `deepseek-reasoner` currently route to `deepseek-v4-flash` non-thinking/thinking. In `chat.deepseek.com` itself, the direct stream does not return the exact checkpoint name (`model: ""`), so the proxy records both the web mode (`default` / `Fast`) and the current official routing (`DeepSeek-V4-Flash`).
 
 The current DeepSeek Web remote config shows these web modes:
 
-- `default` / UI `Быстрый` — works; supports `thinking_enabled` and `search_enabled`.
-- `expert` / UI `Эксперт` — works through the current web contract (`x-client-version=2.0.0`) and supports `thinking_enabled`. `/v1/models` exposes `deepseek-expert` without reasoning and `deepseek-v4-pro` as Expert + reasoning.
-- `vision` / UI `Распознавание` — visible in remote config, but the direct Web API currently returns `backend_err_by_model` (`Vision is temporarily unavailable`). So `deepseek-vision` is hidden from `/v1/models`.
+- `default` / UI `Fast` — works; supports `thinking_enabled` and `search_enabled`.
+- `expert` / UI `Expert` — works through the current web contract (`x-client-version=2.0.0`) and supports `thinking_enabled`. `/v1/models` exposes `deepseek-expert` without reasoning and `deepseek-v4-pro` as Expert + reasoning.
+- `vision` / UI `Recognition` — visible in remote config, but the direct Web API currently returns `backend_err_by_model` (`Vision is temporarily unavailable`). So `deepseek-vision` is hidden from `/v1/models`.
 
 Search is unavailable for Expert per remote config, so `deepseek-expert-search` remains unsupported.
 

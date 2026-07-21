@@ -52,7 +52,7 @@ function printBanner() {
 ██      ██   ██ ██      ██      ██   ██ ██      ██      ██      ██  ██
 ██      ██   ██ ███████ ███████ ██████  ███████ ███████ ███████ ██   ██
 
-   FreeDeepseekAPI — API-прокси для DeepSeek Web Chat
+   FreeDeepseekAPI — API proxy for DeepSeek Web Chat
    ${formatWatermark()}
 `);
 }
@@ -510,30 +510,30 @@ async function tryDeleteUploadedFile(fileId, headers, agentTag) {
 }
 
 const MODEL_CONFIGS = {
-    // DeepSeek Web real model_type: default / UI name: "Быстрый".
+    // DeepSeek Web real model_type: default / UI name: "Fast".
     // Public model family: DeepSeek-V3.2-Exp chat mode (fast, no visible reasoning).
     'deepseek-chat': {
         model_type: 'default', thinking_enabled: false, search_enabled: false,
-        real_model: 'DeepSeek-V4-Flash non-thinking (DeepSeek Web “Быстрый” / default)',
+        real_model: 'DeepSeek-V4-Flash non-thinking (DeepSeek Web “Fast” / default)',
         capabilities: { reasoning: false, web_search: false, files: true },
         supported: true,
     },
     'deepseek-v3': {
         model_type: 'default', thinking_enabled: false, search_enabled: false,
-        real_model: 'DeepSeek-V4-Flash non-thinking (DeepSeek Web “Быстрый” / default)',
+        real_model: 'DeepSeek-V4-Flash non-thinking (DeepSeek Web “Fast” / default)',
         capabilities: { reasoning: false, web_search: false, files: true },
         supported: true,
     },
     'deepseek-default': {
         model_type: 'default', thinking_enabled: false, search_enabled: false,
-        real_model: 'DeepSeek-V4-Flash non-thinking (DeepSeek Web “Быстрый” / default)',
+        real_model: 'DeepSeek-V4-Flash non-thinking (DeepSeek Web “Fast” / default)',
         capabilities: { reasoning: false, web_search: false, files: true },
         supported: true,
     },
     // Same DeepSeek Web default model, but with thinking_enabled=true. UI exposes it as thinking/reasoning mode.
     'deepseek-reasoner': {
         model_type: 'default', thinking_enabled: true, search_enabled: false,
-        real_model: 'DeepSeek-V4-Flash thinking mode (DeepSeek Web “Быстрый” + thinking_enabled)',
+        real_model: 'DeepSeek-V4-Flash thinking mode (DeepSeek Web “Fast” + thinking_enabled)',
         capabilities: { reasoning: true, web_search: false, files: true },
         supported: true,
     },
@@ -545,13 +545,13 @@ const MODEL_CONFIGS = {
     },
     'deepseek-chat-search': {
         model_type: 'default', thinking_enabled: false, search_enabled: true,
-        real_model: 'DeepSeek-V4-Flash non-thinking (DeepSeek Web “Быстрый” / default) + web search',
+        real_model: 'DeepSeek-V4-Flash non-thinking (DeepSeek Web “Fast” / default) + web search',
         capabilities: { reasoning: false, web_search: true, files: true },
         supported: true,
     },
     'deepseek-default-search': {
         model_type: 'default', thinking_enabled: false, search_enabled: true,
-        real_model: 'DeepSeek-V4-Flash non-thinking (DeepSeek Web “Быстрый” / default) + web search',
+        real_model: 'DeepSeek-V4-Flash non-thinking (DeepSeek Web “Fast” / default) + web search',
         capabilities: { reasoning: false, web_search: true, files: true },
         supported: true,
     },
@@ -567,29 +567,29 @@ const MODEL_CONFIGS = {
         capabilities: { reasoning: true, web_search: true, files: true },
         supported: true,
     },
-    // DeepSeek Web UI name: “Эксперт”. Requires current web client headers (x-client-version=2.0.0).
+    // DeepSeek Web UI name: “Expert”. Requires current web client headers (x-client-version=2.0.0).
     'deepseek-expert': {
         model_type: 'expert', thinking_enabled: false, search_enabled: false,
-        real_model: 'DeepSeek Web “Эксперт” (limited resources)',
+        real_model: 'DeepSeek Web “Expert” (limited resources)',
         capabilities: { reasoning: false, web_search: false, files: false },
         supported: true,
     },
     'deepseek-v4-pro': {
         model_type: 'expert', thinking_enabled: true, search_enabled: false,
-        real_model: 'DeepSeek Web “Эксперт” + thinking mode (exposed as deepseek-v4-pro alias)',
+        real_model: 'DeepSeek Web “Expert” + thinking mode (exposed as deepseek-v4-pro alias)',
         capabilities: { reasoning: true, web_search: false, files: false },
         supported: true,
     },
     'deepseek-expert-search': {
         model_type: 'expert', thinking_enabled: false, search_enabled: true,
-        real_model: 'DeepSeek Web “Эксперт” + search requested, but Expert has search_feature=null in remote config',
+        real_model: 'DeepSeek Web “Expert” + search requested, but Expert has search_feature=null in remote config',
         capabilities: { reasoning: false, web_search: false, files: false },
         supported: false,
         unavailable_reason: 'Expert mode is rejected; remote config says search is not available for Expert.',
     },
     'deepseek-vision': {
         model_type: 'vision', thinking_enabled: false, search_enabled: false,
-        real_model: 'DeepSeek Web “Распознавание” / image understanding beta',
+        real_model: 'DeepSeek Web “Recognition” / image understanding beta',
         capabilities: { reasoning: false, web_search: false, files: true, vision: true },
         supported: false,
         unavailable_reason: 'Current Web API returns: Vision is temporarily unavailable (backend_err_by_model).',

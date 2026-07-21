@@ -77,7 +77,7 @@ async function probe(model_type, thinking_enabled, search_enabled) {
       chat_session_id: sessionId,
       parent_message_id: null,
       model_type,
-      prompt: 'Ответь ровно OK',
+      prompt: 'Reply with exactly OK',
       ref_file_ids: [],
       thinking_enabled,
       search_enabled,
