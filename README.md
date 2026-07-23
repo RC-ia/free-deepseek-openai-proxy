@@ -141,11 +141,11 @@ How it behaves:
 - **Streaming:** SSE chunks and normal non-stream JSON responses
 - **Reasoning output:** separate `reasoning_content` for thinking models
 - **Tool calling:** parses OpenAI tools, Anthropic tools and Responses function tools
-- **Model capabilities:** `GET /v1/model-capabilities` with alias → real web mode
+- **Single-model policy:** only `deepseek-reasoner` is exposed and accepted; every request runs with reasoning enabled
 - **Agent sessions:** a separate DeepSeek session per `user` / agent id
 - **Session recovery:** auto-reset of stale chains/sessions
 - **Zero dependencies:** Node.js 18+, no npm dependencies
-- **Large prompt upload:** prompts over the inline limit (~154k chars) are auto-uploaded as `.txt` file attachments for models with file support; models without file support get a clean 413
+- **Large prompt upload:** prompts over the inline limit (~154k chars) are auto-uploaded as `.txt` file attachments for `deepseek-reasoner`
 
 ---
 
@@ -228,7 +228,7 @@ Tunables:
 - `DEEPSEEK_CONTEXT_SAFETY_MARGIN` (default `0.95`) — reject at 95% to avoid the empty-response failure mode.
 - `DEEPSEEK_CHAT_CONTEXT_EFFECTIVE_LIMIT` = `CHAR_LIMIT × SAFETY_MARGIN` (the reject threshold).
 
-> Note: for models with file support (`deepseek-reasoner`, `deepseek-chat`, etc.), the proxy now **automatically uploads** the oversized prompt as a `.txt` file attachment and sends a short placeholder prompt with `ref_file_ids` — so the request succeeds instead of failing with a 413. Models without file support (`deepseek-v4-pro` / expert) still get the 413. The proxy does **not** auto-truncate inline text. (Replying with a 413 on a *compaction notice* is intentionally avoided to prevent a compress→413→compress loop.)
+> `deepseek-reasoner` supports file attachments. The proxy automatically uploads an oversized prompt as a `.txt` file and sends a short placeholder prompt with `ref_file_ids`, instead of failing with a 413. It does **not** auto-truncate inline text. (Replying with a 413 on a *compaction notice* is intentionally avoided to prevent a compress→413→compress loop.)
 
 ---
 
@@ -346,7 +346,7 @@ Set agent/session explicitly:
 curl -X POST http://localhost:9655/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "x-agent-session: my-agent" \
-  -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"Hi"}]}'
+  -d '{"model":"deepseek-reasoner","messages":[{"role":"user","content":"Hi"}]}'
 ```
 
 View active sessions:
@@ -431,7 +431,7 @@ curl http://localhost:9655/v1/models
 curl http://localhost:9655/v1/model-capabilities
 ```
 
-If all is well, `/health` returns the server status, the list of supported aliases, and `config_ready: true`.
+If all is well, `/health` returns the server status, the supported model list (`deepseek-reasoner`), and `config_ready: true`.
 
 ---
 
@@ -443,25 +443,13 @@ If all is well, `/health` returns the server status, the list of supported alias
 curl -X POST http://localhost:9655/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "deepseek-chat",
+    "model": "deepseek-reasoner",
     "messages": [{"role": "user", "content": "Hello! Reply with one phrase."}],
     "stream": false
   }'
 ```
 
-### Reasoning
-
-```bash
-curl -X POST http://localhost:9655/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "deepseek-reasoner",
-    "messages": [{"role": "user", "content": "Answer briefly: why is the sky blue?"}],
-    "stream": false
-  }'
-```
-
-For reasoning models, the API returns the thinking chain separately from the final answer:
+Because the only supported model is `deepseek-reasoner`, the API always returns the thinking chain separately from the final answer:
 
 - non-stream: `choices[0].message.reasoning_content`
 - stream: `choices[0].delta.reasoning_content`
@@ -469,25 +457,13 @@ For reasoning models, the API returns the thinking chain separately from the fin
 
 `reasoning_tokens` is an approximate estimate from the extracted DeepSeek Web `THINK` text, because the web stream does not return official per-reasoning token usage.
 
-### Web search
-
-```bash
-curl -X POST http://localhost:9655/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "deepseek-chat-search",
-    "messages": [{"role": "user", "content": "Find a recent fact about DeepSeek and answer briefly."}],
-    "stream": false
-  }'
-```
-
 ### Streaming
 
 ```bash
 curl -N -X POST http://localhost:9655/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "deepseek-chat",
+    "model": "deepseek-reasoner",
     "messages": [{"role": "user", "content": "Tell a short joke."}],
     "stream": true
   }'
@@ -499,7 +475,7 @@ curl -N -X POST http://localhost:9655/v1/chat/completions \
 curl -X POST http://localhost:9655/v1/messages \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "deepseek-chat",
+    "model": "deepseek-reasoner",
     "max_tokens": 512,
     "messages": [{"role": "user", "content": "Reply exactly OK"}],
     "stream": false
@@ -512,7 +488,7 @@ To use with Claude Code, set the backend directly:
 export ANTHROPIC_BASE_URL="http://127.0.0.1:9655"
 export ANTHROPIC_AUTH_TOKEN="dummy-key"
 export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
-claude --model deepseek-chat
+claude --model deepseek-reasoner
 ```
 
 ### OpenAI Responses API
@@ -521,7 +497,7 @@ claude --model deepseek-chat
 curl -X POST http://localhost:9655/v1/responses \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "deepseek-chat",
+    "model": "deepseek-reasoner",
     "input": "Reply exactly OK",
     "stream": false
   }'
@@ -545,41 +521,19 @@ The proxy asks DeepSeek to return a strict JSON tool call, but also parses fallb
 
 ## 🧠 Models
 
-`GET /v1/models` returns only the aliases that are currently verified and working through this proxy.
+This proxy exposes **exactly one model**:
 
-### Working aliases
+| Model | Web mode | Reasoning | Web search | Files |
+| --- | --- | --- | --- | --- |
+| `deepseek-reasoner` | `default` | yes | no | ✅ |
 
-| Alias | Web mode | Reasoning | Web search | Files | Comment |
-| --- | --- | --- | --- | --- | --- |
-| `deepseek-chat` | `Fast` / `default` | no | no | ✅ | basic chat |
-| `deepseek-v3` | `Fast` / `default` | no | no | ✅ | compatible alias |
-| `deepseek-default` | `Fast` / `default` | no | no | ✅ | compatible alias |
-| `deepseek-reasoner` | `Fast` / `default` | yes | no | ✅ | `thinking_enabled=true` |
-| `deepseek-r1` | `Fast` / `default` | yes | no | ✅ | R1-compatible alias |
-| `deepseek-chat-search` | `Fast` / `default` | no | yes | ✅ | web search |
-| `deepseek-default-search` | `Fast` / `default` | no | yes | ✅ | web search alias |
-| `deepseek-reasoner-search` | `Fast` / `default` | yes | yes | ✅ | reasoning + search |
-| `deepseek-r1-search` | `Fast` / `default` | yes | yes | ✅ | R1-compatible + search |
-| `deepseek-expert` | `Expert` / `expert` | no | no | ❌ | Expert mode |
-| `deepseek-v4-pro` | `Expert` / `expert` | yes | no | ❌ | Expert + reasoning |
+Requests with any other model ID return HTTP 400 (`invalid_model`). The proxy does **not** silently remap aliases, so clients cannot accidentally disable reasoning.
 
-Models with ✅ in the **Files** column accept large prompts as `.txt` file attachments (auto-uploaded by the proxy when the inline limit is exceeded). Models with ❌ return a 413 error instead.
-
-Full mapping:
+`deepseek-reasoner` runs DeepSeek Web default mode with `thinking_enabled=true` (currently DeepSeek-V4-Flash thinking). Large prompts are auto-uploaded as `.txt` attachments when the inline limit is exceeded.
 
 ```bash
 curl http://localhost:9655/v1/model-capabilities
 ```
-
-Per the official DeepSeek V4 Preview page, `deepseek-chat` and `deepseek-reasoner` currently route to `deepseek-v4-flash` non-thinking/thinking. In `chat.deepseek.com` itself, the direct stream does not return the exact checkpoint name (`model: ""`), so the proxy records both the web mode (`default` / `Fast`) and the current official routing (`DeepSeek-V4-Flash`).
-
-The current DeepSeek Web remote config shows these web modes:
-
-- `default` / UI `Fast` — works; supports `thinking_enabled` and `search_enabled`.
-- `expert` / UI `Expert` — works through the current web contract (`x-client-version=2.0.0`) and supports `thinking_enabled`. `/v1/models` exposes `deepseek-expert` without reasoning and `deepseek-v4-pro` as Expert + reasoning.
-- `vision` / UI `Recognition` — visible in remote config, but the direct Web API currently returns `backend_err_by_model` (`Vision is temporarily unavailable`). So `deepseek-vision` is hidden from `/v1/models`.
-
-Search is unavailable for Expert per remote config, so `deepseek-expert-search` remains unsupported.
 
 ---
 
@@ -588,8 +542,8 @@ Search is unavailable for Expert per remote config, so `deepseek-expert-search` 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/` or `/health` | proxy status |
-| `GET` | `/v1/models` | list of working OpenAI-compatible aliases |
-| `GET` | `/v1/model-capabilities` | full mapping of aliases, real model, capabilities |
+| `GET` | `/v1/models` | list of the single supported model |
+| `GET` | `/v1/model-capabilities` | real model mapping and capabilities for `deepseek-reasoner` |
 | `POST` | `/v1/chat/completions` | OpenAI-compatible Chat Completions |
 | `POST` | `/v1/messages` | Anthropic Messages API shim |
 | `POST` | `/v1/responses` | OpenAI Responses API shim |
@@ -647,7 +601,7 @@ npm test
 Live smoke tests against a running local proxy:
 
 ```bash
-BASE_URL=http://127.0.0.1:9655 MODEL=deepseek-chat npm run test:live
+BASE_URL=http://127.0.0.1:9655 MODEL=deepseek-reasoner npm run test:live
 ```
 
 ---

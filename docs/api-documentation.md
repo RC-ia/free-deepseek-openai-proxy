@@ -6,7 +6,7 @@ This project reverse-engineers the **DeepSeek Web chat API** (`chat.deepseek.com
 
 **Server:** `host2.onldigital.com` (161.97.175.214)  
 **Proxy:** Node.js HTTP server on port 9655  
-**Model exposed:** Multiple aliases (`deepseek-chat`, `deepseek-reasoner`, `deepseek-v4-pro`, etc.) — see `/v1/models`
+**Model exposed:** only `deepseek-reasoner` — see `/v1/models`
 
 ---
 
@@ -140,7 +140,7 @@ data: {"p": "response/done"}
 
 ### 2.4 File Upload (Large Prompt Attachment)
 
-When a prompt exceeds the inline text limit (~162k chars / ~40k tokens), the proxy can upload it as a `.txt` file attachment for models that support files (`deepseek-reasoner`, `deepseek-chat`, etc.). Models without file support (`deepseek-v4-pro` / expert mode) still receive a 413 error.
+When a prompt exceeds the inline text limit (~162k chars / ~40k tokens), the proxy uploads it as a `.txt` file attachment for `deepseek-reasoner` (the only exposed model; `files: true`).
 
 ```
 POST https://chat.deepseek.com/api/v0/file/upload_file
@@ -218,9 +218,7 @@ The proxy handles this transparently — clients don't need to change anything:
    - Uploads the full prompt as a `.txt` file
    - Waits for parse completion
    - Sends a short placeholder prompt + `ref_file_ids` to DeepSeek
-4. If the model has `files: false` (e.g., `deepseek-v4-pro`):
-   - Returns HTTP 413 with `context_length_exceeded` (same as before)
-5. If upload/parse fails for any reason:
+4. If upload/parse fails for any reason:
    - Falls back to HTTP 413 with the original error message
 
 ### 2.5 Proof-of-Work (SHA3 Wasm)
@@ -258,7 +256,7 @@ GET /
 Response:
 {
   "status": "ok",
-  "model": "deepseek-chat",
+  "model": "deepseek-reasoner",
   "agents": <int>        ← number of active agent sessions
 }
 ```
@@ -272,7 +270,7 @@ Response:
 {
   "data": [
     {
-      "id": "deepseek-chat",
+      "id": "deepseek-reasoner",
       "object": "model",
       "created": <timestamp>,
       "owned_by": "deepseek-web"
@@ -316,7 +314,7 @@ Response (non-stream, stream=false):
   "id": "ds-<timestamp>",
   "object": "chat.completion",
   "created": <unix_ts>,
-  "model": "deepseek-chat",
+  "model": "deepseek-reasoner",
   "choices": [
     {
       "index": 0,
@@ -353,7 +351,7 @@ POST /v1/messages
 
 Request:
 {
-  "model": "deepseek-chat",
+  "model": "deepseek-reasoner",
   "max_tokens": 1024,
   "system": "optional system prompt",
   "messages": [{"role":"user","content":"Hello"}],
@@ -392,7 +390,7 @@ Claude Code direct backend example:
 export ANTHROPIC_BASE_URL="http://127.0.0.1:9655"
 export ANTHROPIC_AUTH_TOKEN="dummy-key"
 export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
-claude --model deepseek-chat
+claude --model deepseek-reasoner
 ```
 
 ### 3.5 OpenAI Responses API Shim
@@ -402,7 +400,7 @@ POST /v1/responses
 
 Request:
 {
-  "model": "deepseek-chat",
+  "model": "deepseek-reasoner",
   "input": "Hello" | [{"role":"user","content":"Hello"}],
   "instructions": "optional system prompt",
   "tools": [{"type":"function","name":"get_time","parameters":{...}}],
@@ -414,7 +412,7 @@ Response:
   "id": "resp_<timestamp>",
   "object": "response",
   "status": "completed",
-  "model": "deepseek-chat",
+  "model": "deepseek-reasoner",
   "output": [...],
   "output_text": "...",
   "usage": {
@@ -512,7 +510,7 @@ Remote Hermes agents should set the `user` field in their requests for named ses
 # In remote agent config
 model:
   base_url: http://161.97.175.214:9655/v1
-  model: deepseek-chat
+  model: deepseek-reasoner
 ```
 
 The proxy uses `user` from the request body. If not set, it falls back to the client's IP as the session key.
@@ -656,10 +654,10 @@ const DS_CONFIG = {
 
 ```yaml
 model:
-  default: deepseek-chat
+  default: deepseek-reasoner
   provider: custom
   base_url: http://127.0.0.1:9655/v1
-  model: deepseek-chat
+  model: deepseek-reasoner
 providers: {}
 fallback_providers: []
 ```

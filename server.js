@@ -509,90 +509,16 @@ async function tryDeleteUploadedFile(fileId, headers, agentTag) {
     }
 }
 
+// This proxy intentionally exposes one model only. Keeping aliases would let clients
+// silently disable reasoning or turn on unsupported modes, so unknown model IDs return 400.
 const MODEL_CONFIGS = {
-    // DeepSeek Web real model_type: default / UI name: "Fast".
-    // Public model family: DeepSeek-V3.2-Exp chat mode (fast, no visible reasoning).
-    'deepseek-chat': {
-        model_type: 'default', thinking_enabled: false, search_enabled: false,
-        real_model: 'DeepSeek-V4-Flash non-thinking (DeepSeek Web “Fast” / default)',
-        capabilities: { reasoning: false, web_search: false, files: true },
-        supported: true,
-    },
-    'deepseek-v3': {
-        model_type: 'default', thinking_enabled: false, search_enabled: false,
-        real_model: 'DeepSeek-V4-Flash non-thinking (DeepSeek Web “Fast” / default)',
-        capabilities: { reasoning: false, web_search: false, files: true },
-        supported: true,
-    },
-    'deepseek-default': {
-        model_type: 'default', thinking_enabled: false, search_enabled: false,
-        real_model: 'DeepSeek-V4-Flash non-thinking (DeepSeek Web “Fast” / default)',
-        capabilities: { reasoning: false, web_search: false, files: true },
-        supported: true,
-    },
-    // Same DeepSeek Web default model, but with thinking_enabled=true. UI exposes it as thinking/reasoning mode.
     'deepseek-reasoner': {
-        model_type: 'default', thinking_enabled: true, search_enabled: false,
-        real_model: 'DeepSeek-V4-Flash thinking mode (DeepSeek Web “Fast” + thinking_enabled)',
+        model_type: 'default',
+        thinking_enabled: true,
+        search_enabled: false,
+        real_model: 'DeepSeek-V4-Flash thinking mode (DeepSeek Web default + thinking_enabled)',
         capabilities: { reasoning: true, web_search: false, files: true },
         supported: true,
-    },
-    'deepseek-r1': {
-        model_type: 'default', thinking_enabled: true, search_enabled: false,
-        real_model: 'DeepSeek-V4-Flash thinking mode; R1-compatible alias, not a separate R1 model_type in current Web API',
-        capabilities: { reasoning: true, web_search: false, files: true },
-        supported: true,
-    },
-    'deepseek-chat-search': {
-        model_type: 'default', thinking_enabled: false, search_enabled: true,
-        real_model: 'DeepSeek-V4-Flash non-thinking (DeepSeek Web “Fast” / default) + web search',
-        capabilities: { reasoning: false, web_search: true, files: true },
-        supported: true,
-    },
-    'deepseek-default-search': {
-        model_type: 'default', thinking_enabled: false, search_enabled: true,
-        real_model: 'DeepSeek-V4-Flash non-thinking (DeepSeek Web “Fast” / default) + web search',
-        capabilities: { reasoning: false, web_search: true, files: true },
-        supported: true,
-    },
-    'deepseek-reasoner-search': {
-        model_type: 'default', thinking_enabled: true, search_enabled: true,
-        real_model: 'DeepSeek-V4-Flash thinking mode + web search',
-        capabilities: { reasoning: true, web_search: true, files: true },
-        supported: true,
-    },
-    'deepseek-r1-search': {
-        model_type: 'default', thinking_enabled: true, search_enabled: true,
-        real_model: 'DeepSeek-V4-Flash thinking mode + web search; R1-compatible alias',
-        capabilities: { reasoning: true, web_search: true, files: true },
-        supported: true,
-    },
-    // DeepSeek Web UI name: “Expert”. Requires current web client headers (x-client-version=2.0.0).
-    'deepseek-expert': {
-        model_type: 'expert', thinking_enabled: false, search_enabled: false,
-        real_model: 'DeepSeek Web “Expert” (limited resources)',
-        capabilities: { reasoning: false, web_search: false, files: false },
-        supported: true,
-    },
-    'deepseek-v4-pro': {
-        model_type: 'expert', thinking_enabled: true, search_enabled: false,
-        real_model: 'DeepSeek Web “Expert” + thinking mode (exposed as deepseek-v4-pro alias)',
-        capabilities: { reasoning: true, web_search: false, files: false },
-        supported: true,
-    },
-    'deepseek-expert-search': {
-        model_type: 'expert', thinking_enabled: false, search_enabled: true,
-        real_model: 'DeepSeek Web “Expert” + search requested, but Expert has search_feature=null in remote config',
-        capabilities: { reasoning: false, web_search: false, files: false },
-        supported: false,
-        unavailable_reason: 'Expert mode is rejected; remote config says search is not available for Expert.',
-    },
-    'deepseek-vision': {
-        model_type: 'vision', thinking_enabled: false, search_enabled: false,
-        real_model: 'DeepSeek Web “Recognition” / image understanding beta',
-        capabilities: { reasoning: false, web_search: false, files: true, vision: true },
-        supported: false,
-        unavailable_reason: 'Current Web API returns: Vision is temporarily unavailable (backend_err_by_model).',
     },
 };
 
@@ -661,13 +587,12 @@ function applyResponsePatchOperations(ops, appendFragments) {
 }
 
 function resolveModelConfig(model) {
-    const requested = String(model || 'deepseek-chat').toLowerCase();
-    return MODEL_CONFIGS[requested] || MODEL_CONFIGS['deepseek-chat'];
+    return MODEL_CONFIGS['deepseek-reasoner'];
 }
 function isKnownModel(model) { return Object.prototype.hasOwnProperty.call(MODEL_CONFIGS, String(model || '').toLowerCase()); }
 function isSupportedModel(model) { return resolveModelConfig(model).supported === true; }
 
-async function askDeepSeekStream(prompt, agentId, model = 'deepseek-default', refFileIds = [], preferredAccount = null) {
+async function askDeepSeekStream(prompt, agentId, model = 'deepseek-reasoner', refFileIds = [], preferredAccount = null) {
     const modelCfg = resolveModelConfig(model);
     const session = getOrCreateAgentSession(agentId);
     const account = preferredAccount || await selectAccountForSession(session);
@@ -1031,7 +956,7 @@ function buildUsage(prompt, content, reasoningContent = '') {
     return usage;
 }
 
-function buildToolCallResponse(toolCall, model = 'deepseek-default', prompt = '', reasoningContent = '') {
+function buildToolCallResponse(toolCall, model = 'deepseek-reasoner', prompt = '', reasoningContent = '') {
     const id = 'call_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
     const message = {
         role: 'assistant',
@@ -1059,7 +984,7 @@ function buildToolCallResponse(toolCall, model = 'deepseek-default', prompt = ''
     };
 }
 
-function buildTextResponse(content, prompt, model = 'deepseek-default', reasoningContent = '') {
+function buildTextResponse(content, prompt, model = 'deepseek-reasoner', reasoningContent = '') {
     const message = { role: 'assistant', content };
     if (reasoningContent) message.reasoning_content = reasoningContent;
     return {
@@ -1156,7 +1081,7 @@ function normalizeApiParams(params, apiMode) {
         }
         return {
             ...params,
-            model: params.model || 'deepseek-chat',
+            model: params.model || 'deepseek-reasoner',
             messages,
             tools: normalizeAnthropicTools(params.tools || []),
             stream: params.stream === true,
@@ -1168,7 +1093,7 @@ function normalizeApiParams(params, apiMode) {
         if (params.instructions) messages.unshift({ role: 'system', content: params.instructions });
         return {
             ...params,
-            model: params.model || 'deepseek-chat',
+            model: params.model || 'deepseek-reasoner',
             messages,
             tools: normalizeResponsesTools(params.tools || []),
             stream: params.stream === true,
@@ -1562,7 +1487,7 @@ const server = http.createServer(async (req, res) => {
             const messages = params.messages || [];
             const tools = params.tools || [];
             const stream = params.stream === true;
-            const requestedModel = String(params.model || 'deepseek-chat').toLowerCase();
+            const requestedModel = String(params.model || 'deepseek-reasoner').toLowerCase();
             if (!isKnownModel(requestedModel)) {
                 res.writeHead(400, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: { message: `Unknown model: ${requestedModel}`, type: 'invalid_model', supported_models: SUPPORTED_MODEL_IDS, model_capabilities_url: '/v1/model-capabilities' } }));
@@ -1641,7 +1566,7 @@ const server = http.createServer(async (req, res) => {
 
             // If the prompt exceeds the inline text limit, try uploading it as a
             // file attachment for models that support files (deepseek-reasoner, etc.).
-            // Models without file support (deepseek-v4-pro / expert) still get a 413.
+            // deepseek-reasoner supports files; if upload is unavailable/fails, request falls back to 413.
             let refFileIds = [];
             let effectivePrompt = fullPrompt;
             let uploadAccount = null; // pin the account used for upload so completion uses the same one
