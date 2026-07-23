@@ -522,11 +522,14 @@ const MODEL_CONFIGS = {
     },
 };
 
-// Context window: the DeepSeek Web chat caps INPUT at ~DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT
-// chars (measured empirically). Convert to an approximate token ceiling (chars/4) so
-// OpenAI-compatible clients (Qwen Code, etc.) can read `context_window` from /v1/models
-// just like they do for real APIs. Shared across all Web models (same chat input cap).
-const DEEPSEEK_CONTEXT_WINDOW_TOKENS = Math.floor(DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT / 4);
+// Advertised context window for OpenAI-compatible clients (Qwen Code, etc.).
+// DeepSeek V4's theoretical limit is 1M tokens; we advertise that so clients
+// do not hard-cap themselves at the old ~40k estimate derived from the Web
+// chat char limit. The real Web-chat INPUT safety gate remains
+// DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT / EFFECTIVE_LIMIT (413 / file-upload path)
+// and is independent of this advertised value.
+// Override with DEEPSEEK_CONTEXT_WINDOW_TOKENS if needed.
+const DEEPSEEK_CONTEXT_WINDOW_TOKENS = Number(process.env.DEEPSEEK_CONTEXT_WINDOW_TOKENS || 1_000_000);
 for (const cfg of Object.values(MODEL_CONFIGS)) {
     if (!cfg.context_window) cfg.context_window = DEEPSEEK_CONTEXT_WINDOW_TOKENS;
 }
@@ -942,9 +945,9 @@ function buildUsage(prompt, content, reasoningContent = '') {
         }
     };
     // Context-window visibility: tell the client how much of the chat limit is
-    // used (chars) AND the hard token cap, so IT can decide how to compress
-    // (proxy does not auto-truncate). context_window is the real DeepSeek Web
-    // chat cap (~40k tokens); clients that hardcoded 1M learn the truth here.
+    // used (chars) AND the advertised theoretical token cap (1M by default),
+    // so IT can decide how to compress (proxy does not auto-truncate).
+    // Real Web-chat char safety remains in context_char_limit / 413 path.
     usage.context_window = DEEPSEEK_CONTEXT_WINDOW_TOKENS;
     usage.max_context_length = DEEPSEEK_CONTEXT_WINDOW_TOKENS;
     usage.context_char_limit = DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT;
@@ -1399,9 +1402,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Models: OpenAI-compatible list exposes only aliases verified to work through this proxy.
-    // Expose context_window (and common synonyms) so clients that hardcode a wrong
-    // limit (e.g. assume 1M) actually learn the real ~40k-token chat cap and
-    // stop overflowing before the DeepSeek Web chat silently returns empty.
+    // Expose context_window (and common synonyms) at the theoretical 1M-token
+    // cap so clients do not under-cap themselves. Real Web-chat char safety is
+    // enforced separately via DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT (413 / upload).
     if (req.method === 'GET' && url.pathname === '/v1/models') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ object: 'list', data: SUPPORTED_MODEL_IDS.map(id => {

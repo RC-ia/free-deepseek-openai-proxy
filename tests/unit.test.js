@@ -421,9 +421,10 @@ test('CONTEXT effective limit applies safety margin', () => {
 });
 
 // Regression: /v1/models must expose context_window (tokens) per model, like real APIs.
-test('every model exposes a context_window derived from the chat char limit', () => {
-  const { windowTokens, limit } = serverInternals.CONTEXT;
-  assert.equal(windowTokens, Math.floor(limit / 4));
+// Advertised value is the theoretical 1M-token limit (not chars/4 of the Web chat cap).
+test('every model exposes a context_window of 1M (theoretical limit)', () => {
+  const { windowTokens } = serverInternals.CONTEXT;
+  assert.equal(windowTokens, 1_000_000);
   for (const [id, cfg] of Object.entries(serverInternals.MODEL_CONFIGS)) {
     assert.equal(cfg.context_window, windowTokens, `model ${id} must expose context_window`);
   }
