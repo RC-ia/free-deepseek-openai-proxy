@@ -119,6 +119,8 @@ How it behaves:
 - [Endpoints](#-endpoints)
 - [Open WebUI](#-open-webui)
 - [Refresh login](#-refresh-login)
+- [Self-update](#-self-update)
+- [Tests](#-tests)
 - [Project status](#-project-status)
 
 ---
@@ -142,10 +144,12 @@ How it behaves:
 - **Reasoning output:** separate `reasoning_content` for thinking models
 - **Tool calling:** parses OpenAI tools, Anthropic tools and Responses function tools
 - **Single-model policy:** only `deepseek-reasoner` is exposed and accepted; every request runs with reasoning enabled
+- **Advertised 1M context window:** `/v1/models` and chat `usage` report `context_window` / `max_context_length` / `token_limit` = `1_000_000` (DeepSeek V4 theoretical limit). Real Web-chat input cap (~162k chars) is enforced separately — see [Error 413](#-error-413--full-context-validated-behavior)
 - **Agent sessions:** a separate DeepSeek session per `user` / agent id
 - **Session recovery:** auto-reset of stale chains/sessions
 - **Zero dependencies:** Node.js 18+, no npm dependencies
 - **Large prompt upload:** prompts over the inline limit (~154k chars) are auto-uploaded as `.txt` file attachments for `deepseek-reasoner`
+- **Self-update:** `npm run update` pulls the latest code from git while preserving local auth/config (cross-platform, no `git` CLI quirks)
 
 ---
 
@@ -227,6 +231,7 @@ Tunables:
 - `DEEPSEEK_CHAT_CONTEXT_CHAR_LIMIT` (default `162131`) — hard char cap of the Web chat.
 - `DEEPSEEK_CONTEXT_SAFETY_MARGIN` (default `0.95`) — reject at 95% to avoid the empty-response failure mode.
 - `DEEPSEEK_CHAT_CONTEXT_EFFECTIVE_LIMIT` = `CHAR_LIMIT × SAFETY_MARGIN` (the reject threshold).
+- `DEEPSEEK_CONTEXT_WINDOW_TOKENS` (default `1000000`) — advertised context window in tokens, surfaced via `/v1/models` and chat `usage` as `context_window` / `max_context_length` / `token_limit`. This is the theoretical DeepSeek V4 limit (1M) so clients don't under-cap themselves. It does **not** raise the real Web-chat char gate above.
 
 > `deepseek-reasoner` supports file attachments. The proxy automatically uploads an oversized prompt as a `.txt` file and sends a short placeholder prompt with `ref_file_ids`, instead of failing with a 413. It does **not** auto-truncate inline text. (Replying with a 413 on a *compaction notice* is intentionally avoided to prevent a compress→413→compress loop.)
 
@@ -523,15 +528,32 @@ The proxy asks DeepSeek to return a strict JSON tool call, but also parses fallb
 
 This proxy exposes **exactly one model**:
 
-| Model | Web mode | Reasoning | Web search | Files |
-| --- | --- | --- | --- | --- |
-| `deepseek-reasoner` | `default` | yes | no | ✅ |
+| Model | Web mode | Reasoning | Web search | Files | Context window |
+| --- | --- | --- | --- | --- | --- |
+| `deepseek-reasoner` | `default` | yes | no | ✅ | 1 000 000 (advertised) |
 
 Requests with any other model ID return HTTP 400 (`invalid_model`). The proxy does **not** silently remap aliases, so clients cannot accidentally disable reasoning.
 
 `deepseek-reasoner` runs DeepSeek Web default mode with `thinking_enabled=true` (currently DeepSeek-V4-Flash thinking). Large prompts are auto-uploaded as `.txt` attachments when the inline limit is exceeded.
 
+### Advertised context window vs real chat cap
+
+`GET /v1/models` and chat `usage` report **1 000 000 tokens** for `context_window` / `max_context_length` / `token_limit` — the theoretical DeepSeek V4 limit — so clients (Qwen Code, OpenCode, LiteLLM, etc.) don't under-cap themselves at the old ~40k estimate. This advertised value can be overridden with `DEEPSEEK_CONTEXT_WINDOW_TOKENS`.
+
+The real DeepSeek Web **chat input** cap is ~162 131 chars (~40k tokens). That gate is independent of the advertised window and is enforced by the 413 / file-upload path (see [Error 413](#-error-413--full-context-validated-behavior)). Advertising 1M does **not** raise the physical chat input limit.
+
 ```bash
+curl http://localhost:9655/v1/models
+# {
+#   "data": [{
+#     "id": "deepseek-reasoner",
+#     "context_window": 1000000,
+#     "max_context_length": 1000000,
+#     "token_limit": 1000000,
+#     "capabilities": { "reasoning": true, "web_search": false, "files": true }
+#   }]
+# }
+
 curl http://localhost:9655/v1/model-capabilities
 ```
 
@@ -590,9 +612,33 @@ They are already in `.gitignore`.
 
 ---
 
+## 🔄 Self-update
+
+Pull the latest code from the git remote while preserving local auth/config files (`.env`, `auth.json`, `deepseek-auth.json`, `accounts/*.json`, `package-lock.json`). Works on Windows, WSL, and Linux — no Unix shell quirks.
+
+```bash
+npm run update           # interactive: shows commits behind/ahead, asks y/N
+npm run update:pull       # non-interactive: snapshot → stash → pull --rebase → restore
+npm run update -- --status   # show current commit + remote + working-tree state
+npm run update -- --check    # exit 0 = up-to-date, 1 = updates available
+```
+
+What it does:
+
+1. **Snapshots** protected auth/config files to a temp dir (survives even if gitignored).
+2. **Stashes** all dirty tracked + untracked files (`git stash push --include-untracked`) so the rebase can fast-forward cleanly.
+3. **`git pull --rebase origin <branch>`** (detects `main` or `master` automatically).
+4. **Restores** the auth snapshot (overwrites whatever the pull put there).
+5. **Pops** the stash (your pre-update local edits come back; conflicts are warned, not silently dropped).
+6. **Syntax check** on `server.js`.
+
+If the working tree is still dirty after stash (shouldn't happen), it aborts safely without clobbering.
+
+---
+
 ## 🧪 Tests
 
-Project syntax check:
+Project syntax check + unit tests:
 
 ```bash
 npm test
