@@ -219,9 +219,15 @@ async function selectAccountForSession(session) {
     if (ready.length === 0) {
         // All accounts are in their per-call (or failure) cooldown. Instead of
         // erroring out, wait until the soonest account becomes free, then retry.
-        const waiting = accounts.filter(a => a.config.token && a.config.cookie).sort((a, b) => a.cooldownUntil - b.cooldownUntil)[0];
-        if (waiting) {
-            const waitMs = Math.max(0, waiting.cooldownUntil - now);
+        // NOTE: with a single account, concurrent requests can race — request A
+        // waits, then claims the account and re-arms its cooldown, so request B
+        // wakes up to find it cooling down again. Loop instead of throwing, so B
+        // keeps waiting until an account is actually free (fair queueing).
+        const MAX_WAIT_ROUNDS = 60; // 60 × ~25s worst case ≈ 25min ceiling
+        for (let round = 0; round < MAX_WAIT_ROUNDS; round++) {
+            const waiting = accounts.filter(a => a.config.token && a.config.cookie).sort((a, b) => a.cooldownUntil - b.cooldownUntil)[0];
+            if (!waiting) break;
+            const waitMs = Math.max(0, waiting.cooldownUntil - Date.now());
             if (waitMs > 0) {
                 const waitSec = Math.ceil(waitMs / 1000);
                 console.log(`[DS-API] All accounts cooling down — waiting ~${waitSec}s for ${waiting.id} to free up.`);
@@ -229,6 +235,7 @@ async function selectAccountForSession(session) {
             }
             now = Date.now();
             ready = accounts.filter(a => a.config.token && a.config.cookie && a.cooldownUntil <= now);
+            if (ready.length > 0) break;
         }
         if (ready.length === 0) {
             throw new Error('No valid DeepSeek auth accounts. Run npm run auth or npm run auth:import.');
@@ -370,14 +377,12 @@ const POLL_FETCH_TIMEOUT_MS = 10000;   // 10s per poll request
 
 function buildMultipartBody(fieldName, fileName, content, contentType) {
     const boundary = '----DSProxyBoundary' + Date.now().toString(36) + Math.random().toString(36).slice(2);
-    const preamble = `--${boundary}
-\nContent-Disposition: form-data; name="${fieldName}"; filename="${fileName}"
-\nContent-Type: ${contentType}
-\n
-\n`;
-    const postamble = `
-\n--${boundary}--
-\n`;
+    // RFC 2046: multipart MIME bodies MUST use CRLF (\r\n) line endings.
+    // DeepSeek's upload endpoint rejects LF-only bodies with
+    // biz_code=13 "broken data received", so every separator line
+    // must be CRLF-terminated (including the final closing boundary).
+    const preamble = `--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"; filename="${fileName}"\r\nContent-Type: ${contentType}\r\n\r\n`;
+    const postamble = `\r\n--${boundary}--\r\n`;
     const body = Buffer.concat([
         Buffer.from(preamble, 'utf8'),
         Buffer.from(content, 'utf8'),
@@ -1615,12 +1620,14 @@ const server = http.createServer(async (req, res) => {
             const { resp: dsResp } = await askDeepSeekStream(effectivePrompt, agentId, requestedModel, refFileIds, uploadAccount);
 
             // Best-effort cleanup of uploaded file after completion finishes (non-blocking)
+            // NOTE: do NOT cancel/read dsResp.body here — readDeepSeekResponse() below
+            // consumes that same stream, and calling getReader().cancel() first locks it
+            // and throws "Invalid state: ReadableStream is locked" (HTTP 500). The
+            // setTimeout below deletes the remote file without touching the stream.
             if (refFileIds.length > 0 && uploadAccount) {
                 const cleanupFileId = refFileIds[0];
                 const cleanupHeaders = uploadAccount.headers;
                 const cleanupTag = agentTag;
-                // Fire-and-forget: don't block the response stream
-                dsResp.body?.getReader?.()?.cancel?.().catch?.(() => {});
                 setTimeout(() => tryDeleteUploadedFile(cleanupFileId, cleanupHeaders, cleanupTag), 2000);
             }
 
