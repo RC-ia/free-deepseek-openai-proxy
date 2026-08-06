@@ -2219,6 +2219,10 @@ async function main() {
 }
 
 if (require.main === module) {
+    // Flush metrics on shutdown so a kill -TERM/-INT doesn't lose the last bucket.
+    const shutdown = () => { try { metrics.persist(); } catch {} process.exit(0); };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
     main().catch(err => { console.error('[DS-API] FATAL:', err); process.exit(1); });
 }
 

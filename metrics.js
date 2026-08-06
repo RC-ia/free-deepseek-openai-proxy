@@ -150,15 +150,10 @@ function load() {
 }
 
 // Auto-persist every 5 minutes so a crash loses at most one bucket.
-// Only when metrics.js is the main module (server) — tests import it and
-// must be able to exit cleanly.
-if (require.main === module) {
-    setInterval(persist, BUCKET_MS);
-    // Flush on exit.
-    process.on('exit', persist);
-    process.on('SIGINT', () => { persist(); process.exit(0); });
-    process.on('SIGTERM', () => { persist(); process.exit(0); });
-}
+// unref() keeps the timer from holding the process open (tests exit cleanly).
+setInterval(persist, BUCKET_MS).unref();
+// Flush on exit (covers SIGINT/SIGTERM too, via 'exit').
+process.on('exit', persist);
 
 module.exports = {
     BUCKET_MS,
