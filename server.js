@@ -15,7 +15,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const readline = require('readline');
+const crypto = require('crypto');
 const { spawnSync } = require('child_process');
+const metrics = require('./metrics.js');
 
 // Vendored companion normalizer (RC-ia/deepseek-toolcall-normalizer).
 // Closes the gap where DeepSeek Web emits native <tool_call name=><parameter>
@@ -43,6 +45,42 @@ const SERVER_PUBLIC_IP = (() => {
 const FORGETMEAI_WATERMARK = 't.me/forgetmeai';
 const PORT = Number(process.env.PORT || 9655);
 const HOST = process.env.HOST || '0.0.0.0';
+
+// === CLI args (--host, --port, --key, --web-password, --help) ===
+const ARGV = process.argv.slice(2);
+function argValue(name, def = null) {
+    const idx = ARGV.indexOf(name);
+    if (idx === -1) return def;
+    const val = ARGV[idx + 1];
+    if (val === undefined || val.startsWith('--')) return def;
+    return val;
+}
+const CLI_HOST = argValue('--host', process.env.HOST || '0.0.0.0');
+const CLI_PORT = Number(argValue('--port', process.env.PORT || 9655));
+const API_KEY = argValue('--key', process.env.API_KEY || process.env.DEEPSEEK_PROXY_API_KEY || null);
+const WEB_PASSWORD = argValue('--web-password', process.env.WEB_PASSWORD || null);
+const FINAL_PORT = Number.isFinite(CLI_PORT) ? CLI_PORT : PORT;
+const FINAL_HOST = CLI_HOST;
+
+if (ARGV.includes('--help')) {
+    console.log(`FreeDeepseekAPI — usage:
+  node server.js [options]
+
+Options:
+  --host <addr>        Bind address (default 0.0.0.0). Use 127.0.0.1 for local-only.
+  --port <n>           Port (default 9655).
+  --key <key>          Require this API key for /v1/* calls (Authorization: Bearer <key>).
+  --web-password <pw>  Protect the web dashboard with this password.
+  --help               Show this help.
+
+Examples:
+  node server.js                              # localhost-bound? no: 0.0.0.0:9655
+  node server.js --host 127.0.0.1             # local only
+  node server.js --host 0.0.0.0 --key secret  # LAN + API key
+  node server.js --web-password admin123      # dashboard password
+`);
+    process.exit(0);
+}
 function formatWatermark(prefix = 'ForgetMeAI') { return `${prefix}: ${FORGETMEAI_WATERMARK}`; }
 function printBanner() {
     console.log(`
@@ -77,6 +115,8 @@ const DEFAULT_ACCOUNT_COOLDOWN_MS = Number(process.env.DEEPSEEK_ACCOUNT_COOLDOWN
 // "wait" for this long so rapid-fire clients (OpenCode, etc.) cannot spawn a
 // brand-new DeepSeek chat every few seconds. Defaults to 25s.
 const ACCOUNT_CALL_COOLDOWN_MS = Number(process.env.DEEPSEEK_ACCOUNT_CALL_COOLDOWN_MS || 25 * 1000);
+// A conta é considerada "morta" após N falhas consecutivas (resposta vazia/erro).
+const ACCOUNT_DEAD_THRESHOLD = Number(process.env.DEEPSEEK_ACCOUNT_DEAD_THRESHOLD || 3);
 // Theoretical context character limit of the DeepSeek Web chat (measured:
 // ~162131 chars). The proxy mirrors the chat, so this is the effective cap on
 // the prompt we can send. Leave a safety margin so we reject BEFORE the server
@@ -185,7 +225,7 @@ function loadDeepSeekConfig({ fatal = true } = {}) {
             const raw = fs.readFileSync(file, 'utf8');
             const config = JSON.parse(raw);
             const id = `account_${accounts.length + 1}`;
-            accounts.push({ id, file, config, headers: buildBaseHeaders(config), cooldownUntil: 0, failures: 0, lastUsedAt: 0 });
+            accounts.push({ id, file, config, headers: buildBaseHeaders(config), cooldownUntil: 0, failures: 0, dead: false, lastUsedAt: 0 });
         } catch (e) {
             console.error(`[DS-API] Could not load auth config ${file}: ${e.message}`);
         }
@@ -207,6 +247,7 @@ function accountStatus(account) {
     return {
         id: account.id,
         ready: !!(account.config.token && account.config.cookie),
+        dead: !!account.dead,
         cooldown: account.cooldownUntil > Date.now(),
         cooldown_remaining_sec: Math.max(0, Math.ceil((account.cooldownUntil - Date.now()) / 1000)),
         failures: account.failures,
@@ -215,7 +256,15 @@ function accountStatus(account) {
 }
 async function selectAccountForSession(session) {
     let now = Date.now();
-    let ready = accounts.filter(a => a.config.token && a.config.cookie && a.cooldownUntil <= now);
+    // Skip accounts marked DEAD (>= threshold consecutive failures) unless they
+    // are the ONLY ones available — a dead account still gets used as last
+    // resort after cooldown, so the system never fully stalls.
+    const liveFilter = a => a.config.token && a.config.cookie && !a.dead;
+    let ready = accounts.filter(a => a.config.token && a.config.cookie && a.cooldownUntil <= now && !a.dead);
+    if (ready.length === 0) {
+        // All live accounts are in cooldown — fall back to any account (incl. dead).
+        ready = accounts.filter(a => a.config.token && a.config.cookie && a.cooldownUntil <= now);
+    }
     if (ready.length === 0) {
         // All accounts are in their per-call (or failure) cooldown. Instead of
         // erroring out, wait until the soonest account becomes free, then retry.
@@ -297,11 +346,16 @@ const EMPTY_FAILURE_COOLDOWN_MS = Number(process.env.DEEPSEEK_EMPTY_COOLDOWN_MS 
 const EMPTY_FAILURE_LIMIT = Number(process.env.DEEPSEEK_EMPTY_FAILURE_LIMIT || 2);
 function markAccountEmptyFailure(account) {
     if (!account) return;
-    account.failures++;
+    account.failures = (account.failures || 0) + 1;
+    // Marca como "morta" após ACCOUNT_DEAD_THRESHOLD (3) falhas consecutivas.
+    // A conta volta a viver automaticamente quando responde (ver onSuccessfulCall).
+    if (account.failures >= ACCOUNT_DEAD_THRESHOLD) {
+        account.dead = true;
+        console.log(`[account:${account.id}] MARKED DEAD after ${account.failures} consecutive failures (threshold ${ACCOUNT_DEAD_THRESHOLD}). Will auto-recover on next success.`);
+    }
     if (account.failures >= EMPTY_FAILURE_LIMIT) {
         account.cooldownUntil = Date.now() + EMPTY_FAILURE_COOLDOWN_MS;
         console.log(`[account:${account.id}] cooldown for ${Math.round(EMPTY_FAILURE_COOLDOWN_MS / 1000)}s after ${account.failures} empty responses (failover)`);
-        account.failures = 0; // reset so it can be retried after cooldown
     }
 }
 async function readDeepSeekJsonResponse(resp, label, account) {
@@ -606,6 +660,14 @@ async function askDeepSeekStream(prompt, agentId, model = 'deepseek-reasoner', r
     const account = preferredAccount || await selectAccountForSession(session);
     const dsHeaders = account.headers;
     account.lastUsedAt = Date.now();
+    // Conta respondeu (ou foi selecionada com sucesso) → deixa de ser "morta".
+    // Falhas acumuladas só contam se o PROXY não conseguir extrair resposta;
+    // aqui a conta foi escolhida para a chamada, então resetamos o marcador.
+    if (account.dead) {
+        account.dead = false;
+        account.failures = 0;
+        console.log(`[account:${account.id}] auto-recovered (alive again)`);
+    }
     // Per-call cooldown: hold this account in "wait" so rapid-fire clients
     // (OpenCode, etc.) cannot spin up a new DeepSeek chat every few seconds.
     account.cooldownUntil = Date.now() + ACCOUNT_CALL_COOLDOWN_MS;
@@ -844,23 +906,54 @@ function parseJsonToolCandidate(raw, label = 'json') {
 }
 
 function parseToolCall(text) {
-    if (!text || typeof text !== 'string') return null;
+    const calls = parseToolCalls(text);
+    return calls && calls.length > 0 ? calls[0] : null;
+}
+
+/**
+ * parseToolCalls — parse ALL tool calls from a model response.
+ * Returns an array of { name, arguments } (arguments is a JSON string).
+ * Falls back to parseToolCall's single-call behavior for the first hit.
+ */
+function parseToolCalls(text) {
+    if (!text || typeof text !== 'string') return [];
 
     // FAST-PATH (vendored normalizer): DeepSeek Web emits native tool calls as
-    // <tool_call name="x"><parameter name="p">...</parameter></tool_call>.
+    // <tool_call name="x"><parameter name="p">...</parameter></tool_call>, and can
+    // emit MULTIPLE calls in one response (e.g. <tool_calls><function ...>x2).
     // The legacy branches below treat that XML body as JSON and fail. If the
-    // normalizer recognizes a real tool call, prefer it and short-circuit.
+    // normalizer recognizes tool calls, prefer it and return ALL of them.
     if (normalizeToolCall) {
         const normCalls = normalizeToolCall(text);
         if (normCalls.length > 0) {
-            const argsStr = typeof normCalls[0].arguments === 'string' ? normCalls[0].arguments : JSON.stringify(normCalls[0].arguments);
-            console.log(`[parseToolCall] SUCCESS normalized (native/companion): ${normCalls.map(c => c.name).join(', ')} args=${argsStr}`);
-            // Return the first call to keep the single-tool-call contract; extra
-            // calls in a multi-<tool_calls> block are logged above for visibility.
-            const first = normCalls[0];
-            return { name: first.name, arguments: typeof first.arguments === 'string' ? first.arguments : JSON.stringify(first.arguments) };
+            const out = normCalls.map(c => ({
+                name: c.name,
+                arguments: typeof c.arguments === 'string' ? c.arguments : JSON.stringify(c.arguments),
+            }));
+            console.log(`[parseToolCall] SUCCESS normalized (native/companion): ${out.map(c => c.name).join(', ')} args=${out.map(c => c.arguments.length).join(',')}`);
+            metrics.recordToolCall();
+            return out;
         }
     }
+
+    // Fallback: single-call legacy parse (kept from original).
+    const single = parseToolCallLegacy(text);
+    if (single) {
+        metrics.recordToolCall();
+        return [single];
+    }
+    // Model emitted something that LOOKS like a tool call but failed to parse —
+    // count it as a tool error so the dashboard can surface parse problems.
+    if (/tool_call|TOOL_CALL|<tool|<function|search_call/i.test(text)) {
+        metrics.recordToolError();
+        console.log('[parseToolCall] FAILED: tool-like content present but no call parsed');
+    }
+    return [];
+}
+
+/** Original single-call parser, extracted so parseToolCalls can call it. */
+function parseToolCallLegacy(text) {
+    if (!text || typeof text !== 'string') return null;
 
     // XML-ish wrappers used by some agent prompts.
     const xmlMatch = text.match(/<tool_call[^>]*>([\s\S]*?)<\/tool_call>/i);
@@ -977,6 +1070,31 @@ function buildToolCallResponse(toolCall, model = 'deepseek-reasoner', prompt = '
     };
     // Do not attach reasoning to tool-call turns. Some agent clients treat any
     // reasoning/text payload as a final assistant answer and stop their tool loop.
+    return {
+        id: 'ds-' + Date.now(),
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model,
+        choices: [{
+            index: 0,
+            message,
+            finish_reason: 'tool_calls'
+        }],
+        usage: buildUsage(prompt, '', reasoningContent),
+        watermark: FORGETMEAI_WATERMARK
+    };
+}
+
+function buildMultiToolCallResponse(toolCalls, model = 'deepseek-reasoner', prompt = '', reasoningContent = '') {
+    const message = {
+        role: 'assistant',
+        content: null,
+        tool_calls: toolCalls.map(tc => ({
+            id: 'call_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8),
+            type: 'function',
+            function: { name: tc.name, arguments: tc.arguments }
+        }))
+    };
     return {
         id: 'ds-' + Date.now(),
         object: 'chat.completion',
@@ -1391,6 +1509,13 @@ function formatMessages(messages, tools) {
 }
 
 // === HTTP Server ===
+
+// Web dashboard state (module scope — MUST persist across requests)
+const WEB_DIR = path.join(__dirname, 'web');
+const SESSION_COOKIE = 'dsproxy_session';
+const SESSION_TTL_MS_COOKIE = 12 * 3600 * 1000; // 12h
+const sessionsStore = new Map(); // token -> expiresAt
+
 const server = http.createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
@@ -1399,8 +1524,124 @@ const server = http.createServer(async (req, res) => {
 
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
-    // Health check
-    if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) {
+    // === Web dashboard routes ===
+    function hasWebAuth() {
+        if (!WEB_PASSWORD) return true; // no password configured → open
+        const cookies = (req.headers.cookie || '').split(';').map(c => c.trim());
+        const sid = cookies.find(c => c.startsWith(SESSION_COOKIE + '='));
+        if (!sid) return false;
+        const token = sid.split('=')[1];
+        const exp = sessionsStore.get(token);
+        return exp && exp > Date.now();
+    }
+    function sendUnauthorized(res) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+    }
+    function requireWebAuth(next) {
+        if (hasWebAuth()) return next();
+        sendUnauthorized(res);
+    }
+    function serveStatic(filePath, contentType) {
+        if (!fs.existsSync(filePath)) { res.writeHead(404); res.end('Not found'); return; }
+        res.writeHead(200, { 'Content-Type': contentType });
+        fs.createReadStream(filePath).pipe(res);
+    }
+
+    // Login page (GET) + login action (POST)
+    if (req.method === 'GET' && url.pathname === '/login') {
+        if (!WEB_PASSWORD || hasWebAuth()) { res.writeHead(302, { Location: '/' }); res.end(); return; }
+        serveStatic(path.join(WEB_DIR, 'login.html'), 'text/html; charset=utf-8');
+        return;
+    }
+    if (req.method === 'POST' && url.pathname === '/login') {
+        let body = '';
+        req.on('data', c => body += c);
+        req.on('end', () => {
+            try {
+                const { password } = JSON.parse(body || '{}');
+                if (WEB_PASSWORD && password === WEB_PASSWORD) {
+                    const token = crypto.randomBytes(24).toString('hex');
+                    sessionsStore.set(token, Date.now() + SESSION_TTL_MS_COOKIE);
+                    res.writeHead(200, {
+                        'Content-Type': 'application/json',
+                        'Set-Cookie': `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL_MS_COOKIE / 1000}`,
+                    });
+                    res.end(JSON.stringify({ ok: true }));
+                } else {
+                    res.writeHead(401, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Senha incorreta' }));
+                }
+            } catch (e) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Invalid body' }));
+            }
+        });
+        return;
+    }
+    if (req.method === 'GET' && url.pathname === '/logout') {
+        const cookies = (req.headers.cookie || '').split(';').map(c => c.trim());
+        const sid = cookies.find(c => c.startsWith(SESSION_COOKIE + '='));
+        if (sid) sessionsStore.delete(sid.split('=')[1]);
+        res.writeHead(302, { Location: '/login', 'Set-Cookie': `${SESSION_COOKIE}=; HttpOnly; Path=/; Max-Age=0` });
+        res.end();
+        return;
+    }
+
+    // Dashboard pages (require web auth when password set)
+    if (req.method === 'GET' && url.pathname === '/') {
+        if (WEB_PASSWORD && !hasWebAuth()) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
+        serveStatic(path.join(WEB_DIR, 'index.html'), 'text/html; charset=utf-8');
+        return;
+    }
+    if (req.method === 'GET' && url.pathname === '/metrics') {
+        if (WEB_PASSWORD && !hasWebAuth()) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
+        serveStatic(path.join(WEB_DIR, 'metrics.html'), 'text/html; charset=utf-8');
+        return;
+    }
+
+    // API: accounts status
+    if (req.method === 'GET' && url.pathname === '/api/accounts') {
+        if (WEB_PASSWORD && !hasWebAuth()) { sendUnauthorized(res); return; }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            accounts: accounts.map(a => {
+                const s = accountStatus(a);
+                return {
+                    id: a.id,
+                    ready: s.ready,
+                    status: s.dead ? 'dead' : 'alive',
+                    consecutive_failures: s.failures,
+                    failures_total: s.failures,
+                    cooldown_remaining_sec: s.cooldown_remaining_sec,
+                    last_used_at: a.lastUsedAt,
+                };
+            }),
+            threshold: ACCOUNT_DEAD_THRESHOLD,
+            web_auth_enabled: !!WEB_PASSWORD,
+            api_key_enabled: !!API_KEY,
+        }));
+        return;
+    }
+
+    // API: metrics
+    if (req.method === 'GET' && url.pathname === '/api/metrics') {
+        if (WEB_PASSWORD && !hasWebAuth()) { sendUnauthorized(res); return; }
+        const hours = Number(url.searchParams.get('hours') || 6);
+        const since = Date.now() - hours * 3600 * 1000;
+        const buckets = metrics.serialize().filter(b => b.ts >= since);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            bucket_seconds: metrics.BUCKET_MS / 1000,
+            retention_days: metrics.RETENTION_DAYS,
+            hours,
+            buckets,
+        }));
+        return;
+    }
+
+    // Health check (kept, but / now serves the dashboard)
+    if (req.method === 'GET' && url.pathname === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'ok', service: 'FreeDeepseekAPI', watermark: FORGETMEAI_WATERMARK, models: SUPPORTED_MODEL_IDS, unsupported_models: Object.keys(MODEL_CONFIGS).filter(id => !MODEL_CONFIGS[id].supported), agents: sessions.size, accounts: accounts.map(accountStatus), config_ready: hasAuthConfig(), session_reuse: { strategy: 'sticky per x-agent-session/user', ttl_minutes: Math.round(SESSION_TTL_MS / 60000), max_messages: MAX_MESSAGE_DEPTH, reset_all: 'POST /reset-session?agent=all' } }));
         return;
@@ -1485,6 +1726,21 @@ const server = http.createServer(async (req, res) => {
     if (req.method !== 'POST' || !acceptedPostPaths.includes(url.pathname)) {
         res.writeHead(404); res.end('Not found'); return;
     }
+
+    // API key enforcement for /v1/* calls (--key <key> or API_KEY env)
+    if (API_KEY) {
+        const auth = req.headers['authorization'] || '';
+        const provided = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+        const providedKey = provided || (url.searchParams.get('api_key') || '');
+        if (providedKey !== API_KEY) {
+            metrics.recordError(url.pathname);
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: { message: 'Invalid API key. Provide Authorization: Bearer <key>', type: 'invalid_api_key' } }));
+            return;
+        }
+    }
+
+    metrics.recordCall(url.pathname);
 
     let body = '';
     req.on('data', chunk => body += chunk);
@@ -1731,6 +1987,7 @@ const server = http.createServer(async (req, res) => {
             console.log(`${agentTag} Got ${fullContent.length} chars (+${reasoningContent.length} reasoning chars) in ${elapsed}ms (msg#${session.messageCount})`);
 
             if ((!fullContent || fullContent.trim().length === 0) && modelError) {
+                metrics.recordError(url.pathname);
                 res.writeHead(502, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: { message: modelError.content || 'DeepSeek returned an error without content', type: modelError.finish_reason || modelError.type || 'deepseek_model_error', model: requestedModel, real_model: resolveModelConfig(requestedModel).real_model } }));
                 return;
@@ -1742,6 +1999,7 @@ const server = http.createServer(async (req, res) => {
             while (!fullContent || fullContent.trim().length === 0) {
                 retryAttempt++;
                 if (retryAttempt > MAX_RETRIES) {
+                    metrics.recordError(url.pathname);
                     console.log(`${agentTag} Empty after ${MAX_RETRIES} retries. Giving up.`);
                     res.writeHead(502, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ 
@@ -1812,7 +2070,8 @@ const server = http.createServer(async (req, res) => {
                 }
             }
 
-            let toolCall = parseToolCall(fullContent);
+            let toolCalls = parseToolCalls(fullContent);
+            let toolCall = toolCalls.length > 0 ? toolCalls[0] : null;
 
             // No compaction-413 here on purpose: returning 413 on a *reply* makes
             // the client compress AGAIN and re-send, causing an infinite
@@ -1833,9 +2092,22 @@ const server = http.createServer(async (req, res) => {
 
             storeHistory(agentId, prompt, fullContent, toolCall);
 
-            const openaiResponse = toolCall
-                ? buildToolCallResponse(toolCall, requestedModel, fullPrompt, reasoningContent)
-                : buildTextResponse(fullContent, fullPrompt, requestedModel, reasoningContent);
+            const openaiResponse = toolCalls.length > 1
+                ? buildMultiToolCallResponse(toolCalls, requestedModel, fullPrompt, reasoningContent)
+                : (toolCall
+                    ? buildToolCallResponse(toolCall, requestedModel, fullPrompt, reasoningContent)
+                    : buildTextResponse(fullContent, fullPrompt, requestedModel, reasoningContent));
+
+            // Record token usage into metrics (approximate: chars/4 → tokens).
+            // Calls are already counted at request start; here we only add tokens.
+            const usage = openaiResponse.usage || {};
+            metrics.recordTokens({
+                tokensPrompt: usage.prompt_tokens || Math.round((fullPrompt ? fullPrompt.length : 0) / 4),
+                tokensCompletion: usage.completion_tokens || Math.round(fullContent.length / 4),
+                tokensReasoning: usage.completion_tokens_details && usage.completion_tokens_details.reasoning_tokens
+                    ? usage.completion_tokens_details.reasoning_tokens
+                    : (reasoningContent ? Math.round(reasoningContent.length / 4) : 0),
+            });
 
             if (stream) {
                 if (apiMode === 'anthropic') {
@@ -1858,6 +2130,7 @@ const server = http.createServer(async (req, res) => {
                 console.log(`${agentTag} Response ${apiMode} (tool=${!!toolCall}, ${elapsed}ms, ${fullContent.length} chars)`);
             }
         } catch (e) {
+            metrics.recordError(url.pathname);
             console.log('[DS-API] Error:', e.message);
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: { message: localizeError(e.message), type: 'server_error' } }));
@@ -1927,8 +2200,12 @@ async function main() {
     printBanner();
     const shouldStart = await showStartupMenu();
     if (!shouldStart) process.exit(0);
-    server.listen(PORT, HOST, () => {
-        console.log(`[DS-API] Server on http://${HOST}:${PORT} (multi-agent sessions enabled)`);
+    metrics.load(); // load persisted metrics from disk (30-day retention)
+    server.listen(FINAL_PORT, FINAL_HOST, () => {
+        console.log(`[DS-API] Server on http://${FINAL_HOST}:${FINAL_PORT} (multi-agent sessions enabled)`);
+        if (API_KEY) console.log('[DS-API] API key required for /v1/* calls (Authorization: Bearer <key>)');
+        if (WEB_PASSWORD) console.log('[DS-API] Web dashboard protected by password (/login)');
+        console.log('[DS-API] Dashboard: http://localhost:' + FINAL_PORT + '/ (accounts) and /metrics');
         console.log(`[DS-API] ${formatWatermark()}`);
         console.log('[DS-API] POST /v1/chat/completions (OpenAI Chat Completions, stream=true|false)');
         console.log('[DS-API] POST /v1/messages — Anthropic Messages shim for Claude Code');
@@ -1967,5 +2244,6 @@ module.exports = {
         MODEL_CONFIGS,
     },
     parseToolCall,
+    parseToolCalls,
     toolcallNormalizer: normalizeToolCall ? require('./toolcall_normalizer.js') : null,
 };

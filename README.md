@@ -95,6 +95,55 @@ How it behaves:
 
 ---
 
+## 📊 Web dashboard + metrics + auth
+
+The proxy now ships with a built-in web dashboard served at `/` (replaces the
+bare route log), a time-bucketed metrics store with 30-day persistence, live
+account health, API-key auth for `/v1/*`, and an optional password for the web
+UI.
+
+### Dashboard
+
+| Route | Description |
+|---|---|
+| `GET /` | Accounts page: every account with status **viva** (alive) / **morta** (dead), consecutive failures, cooldown, last call. Auto-refreshes every 5 s. |
+| `GET /metrics` | Metrics page: 4 time charts (Chart.js) with 5-minute buckets — calls, tokens (prompt+completion), call errors, tool-call successes vs tool errors. Period selector: 1 h / 6 h / 24 h / 7 d / 30 d. |
+| `GET /api/accounts` | JSON: account statuses + auth flags. |
+| `GET /api/metrics?hours=N` | JSON: bucket array (`calls`, `tp`, `tc`, `tr`, `err`, `terr`, `tcalls`, `ep`). |
+| `GET /login` / `POST /login` / `GET /logout` | Session auth when `--web-password` is set. |
+
+Metrics are aggregated into **5-minute buckets** aligned to the clock, persisted
+to `metrics.json` (written every 5 min + on exit), and pruned after **30 days**
+(`METRICS_RETENTION_DAYS`). Token counts are approximate (chars ÷ 4).
+
+### Account health — "dead account" detection
+
+- An account is marked **dead** after **3 consecutive failed responses**
+  (`DEEPSEEK_ACCOUNT_DEAD_THRESHOLD`, default `3`).
+- Dead accounts are skipped by the pool while healthier accounts exist; they are
+  still used as a **last-resort fallback** so the proxy never fully stalls.
+- The account **auto-recovers** on the next successful call (`dead` → `alive`).
+
+### Auth (optional)
+
+| Flag / env | Effect |
+|---|---|
+| `--key <key>` (or `API_KEY` / `DEEPSEEK_PROXY_API_KEY`) | Require `Authorization: Bearer <key>` on every `/v1/*` call. 401 otherwise. |
+| `--web-password <pw>` (or `WEB_PASSWORD`) | Protect the dashboard: `/` and `/metrics` redirect to `/login`; `/api/*` return 401 without the session cookie (HttpOnly, 12 h). |
+| `--host <addr>` / `--port <n>` | Override bind address / port (defaults: `0.0.0.0`, `9655`). Use `--host 127.0.0.1` for local-only. |
+
+Examples:
+
+```bash
+# Local-only + API key + dashboard password
+node server.js --host 127.0.0.1 --key sk-mykey --web-password admin123
+
+# LAN-open (default binds 0.0.0.0) with key only
+node server.js --key sk-mykey
+```
+
+---
+
 ## Navigation
 
 - [What it gives you](#-what-it-gives-you)

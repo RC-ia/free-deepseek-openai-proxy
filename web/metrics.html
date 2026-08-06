@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FreeDeepseekAPI — Métricas</title>
+<style>
+:root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --red: #f85149; --yellow: #d29922; --purple: #bc8cff;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+.topbar { display: flex; align-items: center; gap: 16px; padding: 14px 24px; background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.topbar h1 { font-size: 18px; font-weight: 600; }
+.topbar .spacer { flex: 1; }
+.topbar nav a { color: var(--muted); text-decoration: none; padding: 6px 12px; border-radius: 6px; font-size: 14px; }
+.topbar nav a.active, .topbar nav a:hover { color: var(--text); background: rgba(88,166,255,.12); }
+.container { padding: 24px; max-width: 1200px; margin: 0 auto; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 20px; }
+.card h2 { font-size: 16px; margin-bottom: 14px; }
+.grid-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+.stat { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.stat .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.stat .value { font-size: 26px; font-weight: 700; margin-top: 6px; }
+.stat .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.controls { display: flex; gap: 10px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
+.controls select, .controls button { background: var(--panel); color: var(--text); border: 1px solid var(--border); padding: 8px 14px; border-radius: 8px; font-size: 13px; cursor: pointer; }
+.controls button:hover { border-color: var(--accent); }
+canvas { width: 100% !important; max-height: 320px; }
+.chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+@media (max-width: 900px) { .chart-row { grid-template-columns: 1fr; } }
+.muted { color: var(--muted); }
+.empty { text-align: center; color: var(--muted); padding: 40px 0; }
+@media (max-width: 640px) { .container { padding: 12px; } .topbar { padding: 10px 14px; } }
+</style>
+</head>
+<body>
+<div class="topbar">
+    <h1>⚡ FreeDeepseekAPI</h1>
+    <div class="spacer"></div>
+    <nav>
+        <a href="/">Contas</a>
+        <a href="/metrics" class="active">Métricas</a>
+    </nav>
+    <a href="/logout" style="color:var(--muted);font-size:13px;text-decoration:none;">Sair</a>
+</div>
+<div class="container">
+    <div class="controls">
+        <label class="muted" style="font-size:13px;">Período:</label>
+        <select id="range">
+            <option value="1">Última hora</option>
+            <option value="6" selected>Últimas 6 horas</option>
+            <option value="24">Últimas 24 horas</option>
+            <option value="168">Últimos 7 dias</option>
+            <option value="720">Últimos 30 dias</option>
+        </select>
+        <button id="refresh">↻ Atualizar</button>
+        <span class="muted" id="updated" style="font-size:12px;"></span>
+    </div>
+
+    <div class="grid-4">
+        <div class="stat"><div class="label">Chamadas (período)</div><div class="value" id="s-calls">—</div><div class="sub" id="s-calls-sub"></div></div>
+        <div class="stat"><div class="label">Tokens estimados</div><div class="value" id="s-tokens">—</div><div class="sub" id="s-tokens-sub"></div></div>
+        <div class="stat"><div class="label">Erros</div><div class="value" id="s-errors">—</div><div class="sub" id="s-errors-sub"></div></div>
+        <div class="stat"><div class="label">Erros de tool</div><div class="value" id="s-toolerr">—</div><div class="sub" id="s-toolerr-sub"></div></div>
+    </div>
+
+    <div class="chart-row">
+        <div class="card"><h2>📊 Chamadas por 5 min</h2><canvas id="chart-calls"></canvas></div>
+        <div class="card"><h2>💰 Tokens por 5 min</h2><canvas id="chart-tokens"></canvas></div>
+    </div>
+    <div class="chart-row">
+        <div class="card"><h2>❌ Erros por 5 min</h2><canvas id="chart-errors"></canvas></div>
+        <div class="card"><h2>🛠️ Tool calls & erros por 5 min</h2><canvas id="chart-tools"></canvas></div>
+    </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+const charts = {};
+let chartData = [];
+
+function fmt(n) {
+    if (n >= 1e9) return (n/1e9).toFixed(1) + 'B';
+    if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return (n/1e3).toFixed(1) + 'k';
+    return String(n);
+}
+
+function makeChart(id, label, color, fillColor) {
+    const ctx = document.getElementById(id).getContext('2d');
+    charts[id] = new Chart(ctx, {
+        type: 'bar',
+        data: { labels: [], datasets: [{ label, data: [], backgroundColor: fillColor || color, borderColor: color, borderWidth: 1 }] },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: '#8b949e' } } },
+            scales: {
+                x: { ticks: { color: '#8b949e', maxRotation: 0, autoSkip: true, maxTicksLimit: 12 }, grid: { color: '#21262d' } },
+                y: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' }, beginAtZero: true }
+            }
+        }
+    });
+}
+
+function updateCharts() {
+    const labels = chartData.map(b => {
+        const d = new Date(b.ts);
+        return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
+    });
+    const calls = chartData.map(b => b.calls);
+    const tokens = chartData.map(b => (b.tp || 0) + (b.tc || 0));
+    const errors = chartData.map(b => b.err || 0);
+    const toolCalls = chartData.map(b => b.tcalls || 0);
+    const toolErrors = chartData.map(b => b.terr || 0);
+
+    charts['chart-calls'].data.labels = labels;
+    charts['chart-calls'].data.datasets[0].data = calls;
+    charts['chart-calls'].update();
+
+    charts['chart-tokens'].data.labels = labels;
+    charts['chart-tokens'].data.datasets[0].data = tokens;
+    charts['chart-tokens'].update();
+
+    charts['chart-errors'].data.labels = labels;
+    charts['chart-errors'].data.datasets[0].data = errors;
+    charts['chart-errors'].update();
+
+    charts['chart-tools'].data.labels = labels;
+    charts['chart-tools'].data.datasets[0].data = toolCalls;
+    charts['chart-tools'].update();
+
+    // Stats
+    const sum = a => a.reduce((x,y) => x+y, 0);
+    const tcalls = sum(calls), ttokens = sum(tokens), terr = sum(errors), tterr = sum(toolErrors);
+    const n = chartData.length || 1;
+    document.getElementById('s-calls').textContent = fmt(tcalls);
+    document.getElementById('s-calls-sub').textContent = (tcalls/n).toFixed(1) + '/5min média';
+    document.getElementById('s-tokens').textContent = fmt(ttokens);
+    document.getElementById('s-tokens-sub').textContent = n > 0 ? Math.round(ttokens/n) + '/5min média' : '';
+    document.getElementById('s-errors').textContent = fmt(terr);
+    document.getElementById('s-errors-sub').textContent = terr > 0 ? (terr*100/tcalls).toFixed(1) + '% das chamadas' : '0% das chamadas';
+    document.getElementById('s-toolerr').textContent = fmt(tterr);
+    document.getElementById('s-toolerr-sub').textContent = tterr > 0 ? (tterr*100/Math.max(1,tcalls)).toFixed(1) + '% das chamadas' : '0% das chamadas';
+}
+
+async function load() {
+    const hours = document.getElementById('range').value;
+    try {
+        const r = await fetch('/api/metrics?hours=' + hours);
+        if (r.status === 401) { window.location = '/login'; return; }
+        const d = await r.json();
+        chartData = (d.buckets || []).filter(b => b.calls > 0 || b.err > 0 || b.terr > 0 || (b.tp||0)+(b.tc||0) > 0);
+        updateCharts();
+        document.getElementById('updated').textContent = 'atualizado ' + new Date().toLocaleTimeString('pt-BR');
+    } catch (e) {
+        document.getElementById('updated').textContent = 'erro: ' + e.message;
+    }
+}
+
+if (typeof Chart !== 'undefined') {
+    makeChart('chart-calls', 'Chamadas', '#58a6ff', 'rgba(88,166,255,.25)');
+    makeChart('chart-tokens', 'Tokens', '#3fb950', 'rgba(63,185,80,.25)');
+    makeChart('chart-errors', 'Erros', '#f85149', 'rgba(248,81,73,.25)');
+    makeChart('chart-tools', 'Tool calls', '#bc8cff', 'rgba(188,140,255,.25)');
+    load();
+} else {
+    document.querySelectorAll('canvas').forEach(c => c.remove());
+    document.querySelectorAll('.card h2').forEach(h => h.insertAdjacentHTML('afterend', '<div class="empty">Chart.js não carregou (sem internet?). Mostrando dados brutos abaixo.</div>'));
+    // Fallback: mostra JSON cru
+    load().then(() => {
+        const pre = document.createElement('pre');
+        pre.className = 'muted'; pre.style.cssText = 'font-size:11px;overflow:auto;max-height:300px;';
+        pre.textContent = JSON.stringify(chartData.slice(-20), null, 1);
+        document.querySelector('.chart-row').after(pre);
+    });
+}
+
+document.getElementById('range').addEventListener('change', load);
+document.getElementById('refresh').addEventListener('click', load);
+setInterval(load, 60000);
+</script>
+</body>
+</html>

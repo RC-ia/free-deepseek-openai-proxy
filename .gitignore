@@ -1,6 +1,7 @@
 node_modules/
 package-lock.json
 .env
+metrics.json
 *.log
 auth.json
 deepseek-auth.json

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FreeDeepseekAPI — Dashboard</title>
+<style>
+:root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --red: #f85149; --yellow: #d29922;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+.topbar { display: flex; align-items: center; gap: 16px; padding: 14px 24px; background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.topbar h1 { font-size: 18px; font-weight: 600; }
+.topbar .spacer { flex: 1; }
+.topbar nav a { color: var(--muted); text-decoration: none; padding: 6px 12px; border-radius: 6px; font-size: 14px; }
+.topbar nav a.active, .topbar nav a:hover { color: var(--text); background: rgba(88,166,255,.12); }
+.badge { padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 500; }
+.badge.green { background: rgba(63,185,80,.15); color: var(--green); }
+.badge.red { background: rgba(248,81,73,.15); color: var(--red); }
+.badge.yellow { background: rgba(210,153,34,.15); color: var(--yellow); }
+.container { padding: 24px; max-width: 1200px; margin: 0 auto; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 20px; }
+.card h2 { font-size: 16px; margin-bottom: 14px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+tr:last-child td { border-bottom: none; }
+.status-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
+.status-dot.alive { background: var(--green); box-shadow: 0 0 6px rgba(63,185,80,.6); }
+.status-dot.dead { background: var(--red); box-shadow: 0 0 6px rgba(248,81,73,.6); }
+.grid-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+.stat { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.stat .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.stat .value { font-size: 26px; font-weight: 700; margin-top: 6px; }
+.stat .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+canvas { width: 100% !important; max-height: 340px; }
+.controls { display: flex; gap: 10px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
+.controls select, .controls button { background: var(--panel); color: var(--text); border: 1px solid var(--border); padding: 8px 14px; border-radius: 8px; font-size: 13px; cursor: pointer; }
+.controls button:hover { border-color: var(--accent); }
+.login-wrap { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+.login-box { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 32px; width: 100%; max-width: 360px; }
+.login-box h2 { margin-bottom: 20px; text-align: center; }
+.login-box input { width: 100%; padding: 10px 12px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px; font-size: 14px; }
+.login-box button { width: 100%; padding: 10px; background: var(--accent); color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
+.login-box .err { color: var(--red); font-size: 13px; text-align: center; margin-top: 10px; min-height: 18px; }
+.muted { color: var(--muted); }
+.empty { text-align: center; color: var(--muted); padding: 40px 0; }
+@media (max-width: 640px) { .container { padding: 12px; } .topbar { padding: 10px 14px; } }
+</style>
+</head>
+<body>
+<div class="topbar">
+    <h1>⚡ FreeDeepseekAPI</h1>
+    <div class="spacer"></div>
+    <nav>
+        <a href="/" class="active">Contas</a>
+        <a href="/metrics">Métricas</a>
+    </nav>
+    <a href="/logout" style="color:var(--muted);font-size:13px;text-decoration:none;">Sair</a>
+</div>
+<div class="container">
+    <div class="card">
+        <h2>📡 Contas DeepSeek</h2>
+        <div id="accounts-table"><div class="empty">Carregando...</div></div>
+    </div>
+</div>
+<script>
+async function load() {
+    try {
+        const r = await fetch('/api/accounts');
+        if (r.status === 401) { window.location = '/login'; return; }
+        const d = await r.json();
+        const accs = d.accounts || [];
+        if (!accs.length) {
+            document.getElementById('accounts-table').innerHTML = '<div class="empty">Nenhuma conta configurada.</div>';
+            return;
+        }
+        let html = '<table><thead><tr><th>Conta</th><th>Status</th><th>Falhas</th><th>Cooldown</th><th>Última chamada</th></tr></thead><tbody>';
+        for (const a of accs) {
+            const alive = a.status === 'alive';
+            const cd = a.cooldown_remaining_sec > 0 ? a.cooldown_remaining_sec + 's' : '—';
+            const last = a.last_used_at ? new Date(a.last_used_at).toLocaleTimeString('pt-BR') : 'nunca';
+            const badge = alive
+                ? '<span class="badge green">viva</span>'
+                : (a.status === 'dead' ? '<span class="badge red">morta</span>' : '<span class="badge yellow">desconhecida</span>');
+            html += `<tr>
+                <td><span class="status-dot ${alive ? 'alive' : 'dead'}"></span>${a.id}</td>
+                <td>${badge}</td>
+                <td>${a.consecutive_failures}${a.failures_total > 0 ? ' <span class="muted">(' + a.failures_total + ' total)</span>' : ''}</td>
+                <td>${cd}</td>
+                <td>${last}</td>
+            </tr>`;
+        }
+        html += '</tbody></table>';
+        document.getElementById('accounts-table').innerHTML = html;
+    } catch (e) {
+        document.getElementById('accounts-table').innerHTML = '<div class="empty">Erro ao carregar: ' + e.message + '</div>';
+    }
+}
+load();
+setInterval(load, 5000);
+</script>
+</body>
+</html>
