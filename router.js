@@ -91,11 +91,35 @@ function loadConfig(configPath, cli) {
 }
 
 // ── Embedded/external proxy lifecycle ───────────────────────────────────────
+// PATH completo: systemd usa PATH mínimo e o node do usuário pode estar fora
+// dele (ex: ~/.local/bin). Subprocessos (npm, /usr/bin/env node) precisam.
+function fullPathEnv() {
+    const nodeDir = path.dirname(process.execPath);
+    const existing = process.env.PATH || '';
+    const extra = [nodeDir, path.join(process.env.HOME || '', '.local', 'bin')];
+    const merged = [...extra, ...existing.split(path.delimiter)].filter((v, i, a) => v && a.indexOf(v) === i);
+    return merged.join(path.delimiter);
+}
+
 function spawnManagedProcess(backend, file, args, cwd, env, portLabel) {
-    const child = spawn(file, args, {
+    // Cross-platform: no Windows, comandos como "npm" são arquivos .cmd e o
+    // spawn direto falha com ENOENT. Resolve o executável real ou usa shell.
+    let cmd = file;
+    let cmdArgs = args;
+    // Cross-platform: resolve o executável real de "npm"/"npx" (Windows usa
+    // npm.cmd; Linux pode ter o PATH do usuário fora do PATH do systemd).
+    if (file === 'npm' || file === 'npx') {
+        cmd = resolveNpmCommand(file);
+    } else if (process.platform === 'win32') {
+        const resolved = tryResolveWinCommand(file);
+        if (resolved) cmd = resolved;
+    }
+    const child = spawn(cmd, cmdArgs, {
         cwd: cwd || ROOT,
-        env: { ...process.env, ...env },
+        env: { ...process.env, PATH: fullPathEnv(), ...env },
         stdio: ['ignore', 'pipe', 'pipe'],
+        // no Windows, .cmd precisa de shell pra rodar
+        shell: process.platform === 'win32',
     });
     backend.proc = child;
     child.stdout.on('data', d => process.stdout.write(`[${backend.id}] ${d}`));
@@ -111,6 +135,45 @@ function spawnManagedProcess(backend, file, args, cwd, env, portLabel) {
     });
     backend.url = backend.url || `http://127.0.0.1:${portLabel}`;
     console.log(`[router] proxy "${backend.id}" iniciado (pid=${child.pid}, porta ${portLabel})`);
+}
+
+function tryResolveWinCommand(file) {
+    try {
+        const { execSync } = require('child_process');
+        const out = execSync(`where ${file}`, { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim().split('\n')[0];
+        return out || null;
+    } catch { return null; }
+}
+
+// Resolve o caminho real do npm/npx — funciona no Windows (npm.cmd) e quando
+// o npm está fora do PATH (systemd, PATH mínimo).
+function resolveNpmCommand(name) {
+    if (process.platform === 'win32') {
+        const resolved = tryResolveWinCommand(name);
+        if (resolved) return resolved;
+        return name + '.cmd';
+    }
+    // Linux/macOS: tenta o PATH, depois os locais comuns do node
+    const candidates = [name, name + '.js'];
+    for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+        if (!dir) continue;
+        for (const c of candidates) {
+            const full = path.join(dir, c);
+            if (fs.existsSync(full)) return full;
+        }
+    }
+    // Fallbacks comuns fora do PATH (nvm, .local/bin, /usr/local/bin)
+    const home = process.env.HOME || process.env.USERPROFILE || '';
+    const fallbacks = [
+        path.join(home, '.local', 'bin', name),
+        path.join(home, '.nvm', 'current', 'bin', name),
+        '/usr/local/bin/' + name,
+        '/usr/bin/' + name,
+    ];
+    for (const f of fallbacks) {
+        if (fs.existsSync(f)) return f;
+    }
+    return name; // última tentativa: deixa o spawn falhar com mensagem clara
 }
 
 function startEmbeddedProxy(backend) {
@@ -134,12 +197,17 @@ function startExternalProcess(backend) {
         backend.lastError = 'backend "process" sem comando';
         return;
     }
-    if (backend.cwd && !fs.existsSync(backend.cwd)) {
-        backend.lastError = `cwd não existe: ${backend.cwd}`;
+    // Resolve cwd relativo ao diretório do router.js (portável Linux/Windows)
+    let cwd = backend.cwd;
+    if (cwd) {
+        cwd = path.resolve(ROOT, cwd);
+    }
+    if (cwd && !fs.existsSync(cwd)) {
+        backend.lastError = `cwd não existe: ${cwd}`;
         console.log(`[router] ERRO: ${backend.lastError}`);
         return;
     }
-    spawnManagedProcess(backend, backend.command, backend.args || [], backend.cwd, backend.env || {}, '?');
+    spawnManagedProcess(backend, backend.command, backend.args || [], cwd, backend.env || {}, '?');
 }
 
 function startManagedBackend(backend) {
@@ -546,5 +614,5 @@ function pickBackendForList(bkList, strategy, model) {
 }
 
 if (require.main !== module) {
-    module.exports.__test = { joinBaseAndPath, extractModel, pickBackend: pickBackendForList };
+    module.exports.__test = { joinBaseAndPath, extractModel, pickBackend: pickBackendForList, resolveNpmCommand };
 }

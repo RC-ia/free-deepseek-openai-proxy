@@ -2,6 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const fs = require('node:fs');
 
 const ROOT = path.resolve(__dirname, '..');
 const routerInternals = require('../router.js').__test;
@@ -53,4 +54,16 @@ test('router: pickBackend com tipo process (QwenBridge) saudável', () => {
     const b2 = { id: 'qwen', enabled: true, alive: true, priority: 3, models: ['*'], type: 'process' };
     const picked = routerInternals.pickBackend([b1, b2], 'priority', 'qwen3-max');
     assert.equal(picked.id, 'qwen'); // deepseek não suporta qwen3-max
+});
+
+test('router: resolveNpmCommand acha npm mesmo com PATH mínimo (systemd)', () => {
+    const originalPath = process.env.PATH;
+    process.env.PATH = '/usr/bin:/bin';
+    try {
+        const npmPath = routerInternals.resolveNpmCommand('npm');
+        assert.ok(npmPath && npmPath.length > 0, 'npm deve ser resolvido');
+        assert.ok(fs.existsSync(npmPath), `npm resolvido deve existir: ${npmPath}`);
+    } finally {
+        process.env.PATH = originalPath;
+    }
 });

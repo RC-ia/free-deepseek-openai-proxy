@@ -20,7 +20,7 @@
       "id": "qwenbridge",
       "name": "Qwen (QwenBridge)",
       "type": "process",
-      "cwd": "/home/ubuntu/projetos/QwenBridge",
+      "cwd": "../QwenBridge",
       "command": "npm",
       "args": ["start"],
       "env": {

@@ -1,0 +1,16 @@
+[Unit]
+Description=FreeDeepseekAPI Router (DeepSeek proxy + QwenBridge + roteamento)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/projetos/free-deepseek-openai-proxy
+Environment=DEEPSEEK_AUTH_DIR=./accounts
+Environment=NON_INTERACTIVE=1
+ExecStart=/home/ubuntu/.local/bin/node /home/ubuntu/projetos/free-deepseek-openai-proxy/router.js --config /home/ubuntu/projetos/free-deepseek-openai-proxy/router.config.json
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
