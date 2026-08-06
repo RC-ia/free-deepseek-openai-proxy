@@ -1,8 +1,48 @@
 # free-deepseek-openai-proxy
 
 <p align="center">
-  <strong>Local OpenAI-compatible API proxy for DeepSeek Web Chat</strong>
+  <strong>Local OpenAI-compatible API proxy for DeepSeek Web Chat + Router (LLM gateway)</strong>
 </p>
+
+> ## 🛰️ Router — merge de proxies + roteamento inteligente
+>
+> O **roteador** (`router.js`) é um LLM gateway que:
+>
+> - **Sobe junto** com o proxy DeepSeek (backend `embedded` com `autoStart`) — um
+>   comando inicia tudo, e o proxy aparece como backend no dashboard.
+> - **Roteia** chamadas `/v1/*` entre múltiplos backends OpenAI-compatíveis
+>   configurados por URL + API key.
+> - **Fallback automático**: estratégia `priority` (default) — usa o backend de
+>   menor prioridade saudável; se cair, desvia pro próximo. `roundrobin` distribui
+>   entre saudáveis.
+> - **Health check** periódico com detecção de backend morto.
+> - **Dashboard web** com backends online/offline, contadores e erros por backend.
+> - **Auth**: `--key` para `/v1/*`, `--web-password` para o dashboard.
+>
+> ```bash
+> node router.js [--config router.config.json] [--port 9696] [--host 127.0.0.1]
+>                [--key API_KEY] [--web-password SENHA]
+> ```
+>
+> Config em `router.config.json` (veja `router.config.example.json`):
+>
+> ```json
+> {
+>   "router": { "port": 9696, "host": "127.0.0.1", "apiKey": "", "webPassword": "",
+>               "healthCheckIntervalSec": 60, "strategy": "priority" },
+>   "backends": [
+>     { "id": "deepseek-proxy", "name": "DeepSeek Web (gratuito)", "type": "embedded",
+>       "autoStart": true, "priority": 1, "models": ["deepseek-reasoner"] },
+>     { "id": "outro", "name": "Outro proxy", "type": "openai",
+>       "url": "http://127.0.0.1:9700/v1", "apiKey": "", "priority": 2, "models": ["*"] }
+>   ]
+> }
+> ```
+>
+> - `type: "embedded"` = o roteador inicia/monitora/reinicia o `server.js` (proxy DeepSeek).
+> - `type: "openai"` = qualquer endpoint OpenAI-compatível (URL + key).
+> - `models: ["*"]` aceita qualquer modelo; liste IDs para restringir.
+> - O proxy embutido morre → o roteador **reinicia automaticamente em 5s**.
 
 <p align="center">
   <a href="https://github.com/RC-ia/free-deepseek-openai-proxy/blob/main/LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/license-MIT-green.svg" /></a>

@@ -15,3 +15,4 @@ deepseek-auth.json
 
 # Multi-account auth files (keep the README/.gitkeep tracked, ignore the secrets)
 accounts/*.json
+web_dashboard_screenshot.png

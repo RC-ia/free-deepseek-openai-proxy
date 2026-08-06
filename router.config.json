@@ -1,0 +1,34 @@
+{
+  "router": {
+    "port": 9696,
+    "host": "127.0.0.1",
+    "apiKey": "",
+    "webPassword": "",
+    "healthCheckIntervalSec": 10,
+    "strategy": "priority"
+  },
+  "backends": [
+    {
+      "id": "deepseek-proxy",
+      "name": "DeepSeek Web (gratuito)",
+      "type": "embedded",
+      "autoStart": true,
+      "priority": 1,
+      "models": [
+        "deepseek-reasoner"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "mock-backend",
+      "name": "Backend Mock (teste fallback)",
+      "type": "openai",
+      "url": "http://127.0.0.1:9700/v1",
+      "apiKey": "",
+      "priority": 2,
+      "models": [
+        "*"
+      ]
+    }
+  ]
+}

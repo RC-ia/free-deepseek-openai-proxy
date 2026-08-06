@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FreeDeepseekAPI — Router</title>
+<style>
+:root {
+    --bg: #0a0e17;
+    --bg-grad: radial-gradient(1200px 600px at 20% -10%, rgba(88,166,255,.08), transparent 60%),
+                radial-gradient(1000px 500px at 90% 110%, rgba(188,140,255,.06), transparent 60%);
+    --panel: rgba(22,27,34,.85);
+    --panel-solid: #161b22;
+    --border: rgba(48,54,61,.6);
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --accent-2: #bc8cff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --shadow: 0 8px 32px rgba(0,0,0,.4);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg); background-image: var(--bg-grad);
+    color: var(--text); min-height: 100vh;
+}
+.topbar {
+    display: flex; align-items: center; gap: 16px; padding: 16px 28px;
+    background: rgba(13,17,23,.8); backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10; flex-wrap: wrap;
+}
+.logo { display: flex; align-items: center; gap: 10px; }
+.logo-icon {
+    width: 34px; height: 34px; border-radius: 10px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; box-shadow: 0 0 20px rgba(88,166,255,.3);
+}
+.topbar h1 { font-size: 17px; font-weight: 700; letter-spacing: .02em; }
+.topbar .spacer { flex: 1; }
+.topbar nav { display: flex; gap: 4px; background: rgba(255,255,255,.04); padding: 4px; border-radius: 10px; }
+.topbar nav a { color: var(--muted); text-decoration: none; padding: 7px 16px; border-radius: 8px; font-size: 13px; font-weight: 500; transition: all .2s; }
+.topbar nav a.active, .topbar nav a:hover { color: var(--text); background: rgba(88,166,255,.15); }
+.logout { color: var(--muted); font-size: 13px; text-decoration: none; padding: 7px 12px; border-radius: 8px; transition: all .2s; }
+.logout:hover { color: var(--red); background: rgba(248,81,73,.1); }
+.container { padding: 28px; max-width: 1200px; margin: 0 auto; }
+.grid-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+.stat {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
+    padding: 20px; backdrop-filter: blur(8px); box-shadow: var(--shadow);
+    position: relative; overflow: hidden; transition: transform .2s;
+}
+.stat:hover { transform: translateY(-2px); }
+.stat .icon { font-size: 20px; margin-bottom: 8px; }
+.stat .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; font-weight: 600; }
+.stat .value { font-size: 28px; font-weight: 800; margin-top: 6px; letter-spacing: -.02em; }
+.stat .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.stat::after { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, var(--accent), transparent); }
+.stat:nth-child(2)::after { background: linear-gradient(90deg, var(--green), transparent); }
+.stat:nth-child(3)::after { background: linear-gradient(90deg, var(--red), transparent); }
+.stat:nth-child(4)::after { background: linear-gradient(90deg, var(--accent-2), transparent); }
+.card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
+    padding: 24px; backdrop-filter: blur(8px); box-shadow: var(--shadow);
+    animation: fadeUp .4s ease;
+}
+@keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.card h2 { font-size: 16px; font-weight: 600; margin-bottom: 18px; display: flex; align-items: center; gap: 8px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 13px 14px; border-bottom: 1px solid rgba(48,54,61,.4); }
+th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+tr:last-child td { border-bottom: none; }
+tbody tr { transition: background .15s; }
+tbody tr:hover { background: rgba(88,166,255,.04); }
+.badge { padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+.badge.green { background: rgba(63,185,80,.15); color: var(--green); box-shadow: inset 0 0 0 1px rgba(63,185,80,.25); }
+.badge.red { background: rgba(248,81,73,.15); color: var(--red); box-shadow: inset 0 0 0 1px rgba(248,81,73,.25); }
+.badge.yellow { background: rgba(210,153,34,.15); color: var(--yellow); box-shadow: inset 0 0 0 1px rgba(210,153,34,.25); }
+.status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
+.status-dot.alive { background: var(--green); box-shadow: 0 0 8px rgba(63,185,80,.7); animation: pulse 2s infinite; }
+.status-dot.dead { background: var(--red); box-shadow: 0 0 8px rgba(248,81,73,.6); }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
+.muted { color: var(--muted); }
+.empty { text-align: center; color: var(--muted); padding: 40px 0; }
+@media (max-width: 640px) { .container { padding: 14px; } .topbar { padding: 12px 16px; } .topbar nav a { padding: 6px 10px; } }
+</style>
+</head>
+<body>
+<div class="topbar">
+    <div class="logo">
+        <div class="logo-icon">🛰️</div>
+        <h1>FreeDeepseekAPI Router</h1>
+    </div>
+    <div class="spacer"></div>
+    <nav>
+        <a href="/" class="active">Backends</a>
+        <a href="/metrics">Métricas</a>
+    </nav>
+    <a href="/logout" class="logout">Sair</a>
+</div>
+<div class="container">
+    <div class="grid-4" style="margin-bottom:20px;">
+        <div class="stat"><div class="icon">🔌</div><div class="label">Backends</div><div class="value" id="s-backends">—</div><div class="sub">configurados</div></div>
+        <div class="stat"><div class="icon">🟢</div><div class="label">Online</div><div class="value" id="s-alive">—</div><div class="sub">saudáveis</div></div>
+        <div class="stat"><div class="icon">📞</div><div class="label">Chamadas</div><div class="value" id="s-calls">—</div><div class="sub">totais</div></div>
+        <div class="stat"><div class="icon">❌</div><div class="label">Erros</div><div class="value" id="s-errors">—</div><div class="sub">totais</div></div>
+    </div>
+
+    <div class="card">
+        <h2>🛰️ Backends <span class="muted" style="font-size:12px;">estratégia: <span id="s-strategy">—</span></span></h2>
+        <div id="backends-table"><div class="empty">Carregando...</div></div>
+    </div>
+</div>
+<script>
+async function load() {
+    try {
+        const r = await fetch('/api/backends');
+        if (r.status === 401) { window.location = '/login'; return; }
+        const d = await r.json();
+        const bks = d.backends || [];
+        document.getElementById('s-backends').textContent = bks.length;
+        document.getElementById('s-alive').textContent = bks.filter(b => b.alive).length;
+        document.getElementById('s-calls').textContent = bks.reduce((a,b) => a + (b.calls||0), 0);
+        document.getElementById('s-errors').textContent = bks.reduce((a,b) => a + (b.errors||0), 0);
+        if (!bks.length) {
+            document.getElementById('backends-table').innerHTML = '<div class="empty">Nenhum backend configurado.</div>';
+            return;
+        }
+        let html = '<table><thead><tr><th>Backend</th><th>Tipo</th><th>Status</th><th>Prioridade</th><th>Modelos</th><th>Chamadas</th><th>Erros</th><th>Última chamada</th></tr></thead><tbody>';
+        for (const b of bks) {
+            const badge = b.alive
+                ? '<span class="badge green">online</span>'
+                : '<span class="badge red">offline</span>';
+            const models = Array.isArray(b.models) ? b.models.join(', ') : '—';
+            const last = b.lastCallAt ? new Date(b.lastCallAt).toLocaleTimeString('pt-BR') : 'nunca';
+            const typeLabel = b.type === 'embedded' ? '🔌 embutido' : (b.type === 'openai' ? '🔗 openai' : '📦 ' + b.type);
+            html += `<tr>
+                <td><b>${b.name}</b><br><span class="muted" style="font-size:11px;">${b.url || '—'}</span></td>
+                <td>${typeLabel}</td>
+                <td><span class="status-dot ${b.alive ? 'alive' : 'dead'}"></span>${badge}</td>
+                <td>${b.priority}</td>
+                <td class="muted">${models}</td>
+                <td>${b.calls||0}</td>
+                <td>${b.errors||0}</td>
+                <td>${last}</td>
+            </tr>`;
+        }
+        html += '</tbody></table>';
+        document.getElementById('backends-table').innerHTML = html;
+    } catch (e) {
+        document.getElementById('backends-table').innerHTML = '<div class="empty">Erro: ' + e.message + '</div>';
+    }
+}
+load();
+setInterval(load, 5000);
+</script>
+</body>
+</html>
