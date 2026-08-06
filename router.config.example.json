@@ -17,12 +17,12 @@
       "models": ["deepseek-reasoner"]
     },
     {
-      "id": "exemplo-outro-proxy",
-      "name": "Exemplo: outro proxy OpenAI-compatível",
+      "id": "qwenbridge",
+      "name": "Qwen (QwenBridge)",
       "type": "openai",
-      "url": "http://127.0.0.1:9700/v1",
+      "url": "http://127.0.0.1:9600/v1",
       "apiKey": "",
-      "priority": 2,
+      "priority": 3,
       "models": ["*"],
       "enabled": false
     }

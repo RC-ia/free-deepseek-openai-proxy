@@ -47,3 +47,10 @@ test('router: pickBackend respeita filtro de modelos', () => {
     const picked = routerInternals.pickBackend([b1, b2], 'priority', 'deepseek-reasoner');
     assert.equal(picked.id, 'b'); // b1 não suporta o modelo
 });
+
+test('router: pickBackend com tipo process (QwenBridge) saudável', () => {
+    const b1 = { id: 'deepseek', enabled: true, alive: true, priority: 1, models: ['deepseek-reasoner'], type: 'embedded' };
+    const b2 = { id: 'qwen', enabled: true, alive: true, priority: 3, models: ['*'], type: 'process' };
+    const picked = routerInternals.pickBackend([b1, b2], 'priority', 'qwen3-max');
+    assert.equal(picked.id, 'qwen'); // deepseek não suporta qwen3-max
+});

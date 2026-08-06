@@ -4,7 +4,7 @@
     "host": "127.0.0.1",
     "apiKey": "",
     "webPassword": "",
-    "healthCheckIntervalSec": 10,
+    "healthCheckIntervalSec": 60,
     "strategy": "priority"
   },
   "backends": [
@@ -14,21 +14,24 @@
       "type": "embedded",
       "autoStart": true,
       "priority": 1,
-      "models": [
-        "deepseek-reasoner"
-      ],
-      "enabled": true
+      "models": ["deepseek-reasoner"]
     },
     {
-      "id": "mock-backend",
-      "name": "Backend Mock (teste fallback)",
-      "type": "openai",
-      "url": "http://127.0.0.1:9700/v1",
+      "id": "qwenbridge",
+      "name": "Qwen (QwenBridge)",
+      "type": "process",
+      "cwd": "/home/ubuntu/projetos/QwenBridge",
+      "command": "npm",
+      "args": ["start"],
+      "env": {
+        "PORT": "9600",
+        "HOST": "127.0.0.1"
+      },
+      "url": "http://127.0.0.1:9600/v1",
       "apiKey": "",
-      "priority": 2,
-      "models": [
-        "*"
-      ]
+      "priority": 3,
+      "models": ["*"],
+      "enabled": true
     }
   ]
 }

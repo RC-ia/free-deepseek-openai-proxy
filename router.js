@@ -66,13 +66,18 @@ function loadConfig(configPath, cli) {
     const backends = (config.backends || []).map(b => ({
         id: b.id,
         name: b.name || b.id,
-        type: b.type || 'openai', // 'embedded' | 'openai' | 'anthropic'
+        type: b.type || 'openai', // 'embedded' | 'process' | 'openai' | 'anthropic'
         url: b.url || '',
         apiKey: b.apiKey || '',
         autoStart: b.autoStart !== false,
         priority: b.priority || 99,
         models: b.models || ['*'],
         enabled: b.enabled !== false,
+        // 'process' type: subprocess externo (ex: QwenBridge)
+        cwd: b.cwd || null,
+        command: b.command || null,
+        args: b.args || [],
+        env: b.env || {},
         // runtime state
         alive: false,
         lastCheckedAt: 0,
@@ -85,7 +90,29 @@ function loadConfig(configPath, cli) {
     return { router, backends };
 }
 
-// ── Embedded proxy lifecycle ────────────────────────────────────────────────
+// ── Embedded/external proxy lifecycle ───────────────────────────────────────
+function spawnManagedProcess(backend, file, args, cwd, env, portLabel) {
+    const child = spawn(file, args, {
+        cwd: cwd || ROOT,
+        env: { ...process.env, ...env },
+        stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    backend.proc = child;
+    child.stdout.on('data', d => process.stdout.write(`[${backend.id}] ${d}`));
+    child.stderr.on('data', d => process.stderr.write(`[${backend.id}] ${d}`));
+    child.on('exit', (code, sig) => {
+        console.log(`[router] proxy "${backend.id}" saiu (code=${code} sig=${sig})`);
+        backend.proc = null;
+        backend.alive = false;
+        if (backend.autoStart && !routerShuttingDown) {
+            console.log(`[router] reiniciando "${backend.id}" em 5s...`);
+            setTimeout(() => startManagedBackend(backend), 5000);
+        }
+    });
+    backend.url = backend.url || `http://127.0.0.1:${portLabel}`;
+    console.log(`[router] proxy "${backend.id}" iniciado (pid=${child.pid}, porta ${portLabel})`);
+}
+
 function startEmbeddedProxy(backend) {
     if (!backend || backend.type !== 'embedded' || !backend.autoStart) return;
     if (!fs.existsSync(PROXY_MAIN)) {
@@ -93,40 +120,40 @@ function startEmbeddedProxy(backend) {
         return;
     }
     const proxyPort = 9655;
-    const child = spawn(process.execPath, [PROXY_MAIN], {
-        cwd: ROOT,
-        env: {
-            ...process.env,
-            DEEPSEEK_AUTH_DIR: process.env.DEEPSEEK_AUTH_DIR || './accounts',
-            NON_INTERACTIVE: '1',
-            PORT: String(proxyPort),
-            HOST: '127.0.0.1',
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    backend.proc = child;
-    child.stdout.on('data', d => process.stdout.write(`[${backend.id}] ${d}`));
-    child.stderr.on('data', d => process.stderr.write(`[${backend.id}] ${d}`));
-    child.on('exit', (code, sig) => {
-        console.log(`[router] proxy embutido "${backend.id}" saiu (code=${code} sig=${sig})`);
-        backend.proc = null;
-        backend.alive = false;
-        if (backend.autoStart && !routerShuttingDown) {
-            console.log(`[router] reiniciando "${backend.id}" em 5s...`);
-            setTimeout(() => startEmbeddedProxy(backend), 5000);
-        }
-    });
-    backend.url = `http://127.0.0.1:${proxyPort}`;
-    console.log(`[router] proxy embutido "${backend.id}" iniciado (pid=${child.pid}, porta ${proxyPort})`);
+    spawnManagedProcess(backend, process.execPath, [PROXY_MAIN], ROOT, {
+        DEEPSEEK_AUTH_DIR: process.env.DEEPSEEK_AUTH_DIR || './accounts',
+        NON_INTERACTIVE: '1',
+        PORT: String(proxyPort),
+        HOST: '127.0.0.1',
+    }, proxyPort);
+}
+
+function startExternalProcess(backend) {
+    if (!backend || backend.type !== 'process' || !backend.autoStart) return;
+    if (!backend.command) {
+        backend.lastError = 'backend "process" sem comando';
+        return;
+    }
+    if (backend.cwd && !fs.existsSync(backend.cwd)) {
+        backend.lastError = `cwd não existe: ${backend.cwd}`;
+        console.log(`[router] ERRO: ${backend.lastError}`);
+        return;
+    }
+    spawnManagedProcess(backend, backend.command, backend.args || [], backend.cwd, backend.env || {}, '?');
+}
+
+function startManagedBackend(backend) {
+    if (backend.type === 'embedded') startEmbeddedProxy(backend);
+    else if (backend.type === 'process') startExternalProcess(backend);
 }
 
 let routerShuttingDown = false;
 
 // ── Health checks ───────────────────────────────────────────────────────────
 async function checkBackend(b) {
-    if (b.type === 'embedded' && !b.proc && b.autoStart) {
+    if ((b.type === 'embedded' || b.type === 'process') && !b.proc && b.autoStart) {
         // ainda não iniciado; tenta de novo
-        startEmbeddedProxy(b);
+        startManagedBackend(b);
         b.alive = false;
         b.lastCheckedAt = Date.now();
         return;
@@ -135,8 +162,11 @@ async function checkBackend(b) {
     let err = '';
     try {
         const url = b.url.replace(/\/+$/, '');
-        const probeUrl = b.type === 'embedded'
-            ? `${url}/health`
+        const baseUrl = new URL(url);
+        // Health check na RAIZ do host (não no path base /v1): /health
+        const rootOrigin = baseUrl.origin;
+        const probeUrl = (b.type === 'embedded' || b.type === 'process')
+            ? `${rootOrigin}/health`
             : `${url}/models`;
         const ctrl = new AbortController();
         const t = setTimeout(() => ctrl.abort(), 5000);
@@ -457,9 +487,9 @@ async function main() {
 
     console.log(`[router] FreeDeepseekAPI Router — ${backends.length} backend(s), estratégia: ${routerConfig.strategy}`);
 
-    // Inicia embedded proxies ("sobe junto")
+    // Inicia embedded/external proxies ("sobe junto")
     for (const b of backends) {
-        if (b.type === 'embedded' && b.enabled) startEmbeddedProxy(b);
+        if (b.enabled && (b.type === 'embedded' || b.type === 'process')) startManagedBackend(b);
     }
 
     // Health check inicial + periódico
@@ -477,7 +507,7 @@ async function main() {
         routerShuttingDown = true;
         for (const b of backends) {
             if (b.proc) {
-                console.log(`[router] encerrando proxy embutido "${b.id}"...`);
+                console.log(`[router] encerrando proxy "${b.id}"...`);
                 b.proc.kill('SIGTERM');
             }
         }

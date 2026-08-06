@@ -40,9 +40,11 @@
 > ```
 >
 > - `type: "embedded"` = o roteador inicia/monitora/reinicia o `server.js` (proxy DeepSeek).
+> - `type: "process"` = subprocesso externo monitorado (ex: **QwenBridge** — proxy
+>   OpenAI/Anthropic-compatível pro Qwen Web, `~/projetos/QwenBridge`, porta 9600).
 > - `type: "openai"` = qualquer endpoint OpenAI-compatível (URL + key).
 > - `models: ["*"]` aceita qualquer modelo; liste IDs para restringir.
-> - O proxy embutido morre → o roteador **reinicia automaticamente em 5s**.
+> - O proxy embutido/externo morre → o roteador **reinicia automaticamente em 5s**.
 
 <p align="center">
   <a href="https://github.com/RC-ia/free-deepseek-openai-proxy/blob/main/LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/license-MIT-green.svg" /></a>
