@@ -6,49 +6,100 @@
 <title>FreeDeepseekAPI — Métricas</title>
 <style>
 :root {
-    --bg: #0d1117; --panel: #161b22; --border: #30363d;
-    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
-    --green: #3fb950; --red: #f85149; --yellow: #d29922; --purple: #bc8cff;
+    --bg: #0a0e17;
+    --bg-grad: radial-gradient(1200px 600px at 20% -10%, rgba(88,166,255,.08), transparent 60%),
+                radial-gradient(1000px 500px at 90% 110%, rgba(188,140,255,.06), transparent 60%);
+    --panel: rgba(22,27,34,.85);
+    --panel-solid: #161b22;
+    --border: rgba(48,54,61,.6);
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --accent-2: #bc8cff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --shadow: 0 8px 32px rgba(0,0,0,.4);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
-.topbar { display: flex; align-items: center; gap: 16px; padding: 14px 24px; background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-.topbar h1 { font-size: 18px; font-weight: 600; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg); background-image: var(--bg-grad);
+    color: var(--text); min-height: 100vh;
+}
+.topbar {
+    display: flex; align-items: center; gap: 16px; padding: 16px 28px;
+    background: rgba(13,17,23,.8); backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10; flex-wrap: wrap;
+}
+.logo { display: flex; align-items: center; gap: 10px; }
+.logo-icon {
+    width: 34px; height: 34px; border-radius: 10px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; box-shadow: 0 0 20px rgba(88,166,255,.3);
+}
+.topbar h1 { font-size: 17px; font-weight: 700; letter-spacing: .02em; }
 .topbar .spacer { flex: 1; }
-.topbar nav a { color: var(--muted); text-decoration: none; padding: 6px 12px; border-radius: 6px; font-size: 14px; }
-.topbar nav a.active, .topbar nav a:hover { color: var(--text); background: rgba(88,166,255,.12); }
-.container { padding: 24px; max-width: 1200px; margin: 0 auto; }
-.card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 20px; }
-.card h2 { font-size: 16px; margin-bottom: 14px; }
+.topbar nav { display: flex; gap: 4px; background: rgba(255,255,255,.04); padding: 4px; border-radius: 10px; }
+.topbar nav a { color: var(--muted); text-decoration: none; padding: 7px 16px; border-radius: 8px; font-size: 13px; font-weight: 500; transition: all .2s; }
+.topbar nav a.active, .topbar nav a:hover { color: var(--text); background: rgba(88,166,255,.15); }
+.logout { color: var(--muted); font-size: 13px; text-decoration: none; padding: 7px 12px; border-radius: 8px; transition: all .2s; }
+.logout:hover { color: var(--red); background: rgba(248,81,73,.1); }
+.container { padding: 28px; max-width: 1200px; margin: 0 auto; }
+.controls { display: flex; gap: 10px; margin-bottom: 20px; align-items: center; flex-wrap: wrap; }
+.controls select, .controls button {
+    background: var(--panel-solid); color: var(--text); border: 1px solid var(--border);
+    padding: 9px 16px; border-radius: 10px; font-size: 13px; cursor: pointer; transition: all .2s;
+}
+.controls select:hover, .controls button:hover { border-color: var(--accent); }
+.controls button:hover { background: rgba(88,166,255,.1); }
 .grid-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
-.stat { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
-.stat .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
-.stat .value { font-size: 26px; font-weight: 700; margin-top: 6px; }
+.stat {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
+    padding: 20px; backdrop-filter: blur(8px); box-shadow: var(--shadow);
+    position: relative; overflow: hidden; transition: transform .2s;
+}
+.stat:hover { transform: translateY(-2px); }
+.stat .icon { font-size: 20px; margin-bottom: 8px; }
+.stat .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; font-weight: 600; }
+.stat .value { font-size: 30px; font-weight: 800; margin-top: 6px; letter-spacing: -.02em; }
 .stat .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
-.controls { display: flex; gap: 10px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
-.controls select, .controls button { background: var(--panel); color: var(--text); border: 1px solid var(--border); padding: 8px 14px; border-radius: 8px; font-size: 13px; cursor: pointer; }
-.controls button:hover { border-color: var(--accent); }
-canvas { width: 100% !important; max-height: 320px; }
+.stat::after { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, var(--accent), transparent); }
+.stat:nth-child(2)::after { background: linear-gradient(90deg, var(--green), transparent); }
+.stat:nth-child(3)::after { background: linear-gradient(90deg, var(--red), transparent); }
+.stat:nth-child(4)::after { background: linear-gradient(90deg, var(--accent-2), transparent); }
+.card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
+    padding: 24px; backdrop-filter: blur(8px); box-shadow: var(--shadow);
+    animation: fadeUp .4s ease;
+}
+@keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.card h2 { font-size: 15px; font-weight: 600; margin-bottom: 16px; }
+canvas { width: 100% !important; max-height: 280px; }
 .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 @media (max-width: 900px) { .chart-row { grid-template-columns: 1fr; } }
 .muted { color: var(--muted); }
 .empty { text-align: center; color: var(--muted); padding: 40px 0; }
-@media (max-width: 640px) { .container { padding: 12px; } .topbar { padding: 10px 14px; } }
+@media (max-width: 640px) { .container { padding: 14px; } .topbar { padding: 12px 16px; } }
 </style>
 </head>
 <body>
 <div class="topbar">
-    <h1>⚡ FreeDeepseekAPI</h1>
+    <div class="logo">
+        <div class="logo-icon">⚡</div>
+        <h1>FreeDeepseekAPI</h1>
+    </div>
     <div class="spacer"></div>
     <nav>
         <a href="/">Contas</a>
         <a href="/metrics" class="active">Métricas</a>
     </nav>
-    <a href="/logout" style="color:var(--muted);font-size:13px;text-decoration:none;">Sair</a>
+    <a href="/logout" class="logout">Sair</a>
 </div>
 <div class="container">
     <div class="controls">
-        <label class="muted" style="font-size:13px;">Período:</label>
         <select id="range">
             <option value="1">Última hora</option>
             <option value="6" selected>Últimas 6 horas</option>
@@ -60,11 +111,11 @@ canvas { width: 100% !important; max-height: 320px; }
         <span class="muted" id="updated" style="font-size:12px;"></span>
     </div>
 
-    <div class="grid-4">
-        <div class="stat"><div class="label">Chamadas (período)</div><div class="value" id="s-calls">—</div><div class="sub" id="s-calls-sub"></div></div>
-        <div class="stat"><div class="label">Tokens estimados</div><div class="value" id="s-tokens">—</div><div class="sub" id="s-tokens-sub"></div></div>
-        <div class="stat"><div class="label">Erros</div><div class="value" id="s-errors">—</div><div class="sub" id="s-errors-sub"></div></div>
-        <div class="stat"><div class="label">Erros de tool</div><div class="value" id="s-toolerr">—</div><div class="sub" id="s-toolerr-sub"></div></div>
+    <div class="grid-4" style="margin-bottom:20px;">
+        <div class="stat"><div class="icon">📞</div><div class="label">Chamadas</div><div class="value" id="s-calls">—</div><div class="sub" id="s-calls-sub"></div></div>
+        <div class="stat"><div class="icon">💰</div><div class="label">Tokens estimados</div><div class="value" id="s-tokens">—</div><div class="sub" id="s-tokens-sub"></div></div>
+        <div class="stat"><div class="icon">❌</div><div class="label">Erros</div><div class="value" id="s-errors">—</div><div class="sub" id="s-errors-sub"></div></div>
+        <div class="stat"><div class="icon">🛠️</div><div class="label">Erros de tool</div><div class="value" id="s-toolerr">—</div><div class="sub" id="s-toolerr-sub"></div></div>
     </div>
 
     <div class="chart-row">
@@ -92,14 +143,18 @@ function makeChart(id, label, color, fillColor) {
     const ctx = document.getElementById(id).getContext('2d');
     charts[id] = new Chart(ctx, {
         type: 'bar',
-        data: { labels: [], datasets: [{ label, data: [], backgroundColor: fillColor || color, borderColor: color, borderWidth: 1 }] },
+        data: { labels: [], datasets: [{ label, data: [], backgroundColor: fillColor || color, borderColor: color, borderWidth: 1.5, borderRadius: 4 }] },
         options: {
             responsive: true,
             maintainAspectRatio: false,
-            plugins: { legend: { labels: { color: '#8b949e' } } },
+            animation: { duration: 400 },
+            plugins: {
+                legend: { labels: { color: '#8b949e', font: { size: 11 } } },
+                tooltip: { backgroundColor: '#1c2128', borderColor: '#30363d', borderWidth: 1 }
+            },
             scales: {
-                x: { ticks: { color: '#8b949e', maxRotation: 0, autoSkip: true, maxTicksLimit: 12 }, grid: { color: '#21262d' } },
-                y: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' }, beginAtZero: true }
+                x: { ticks: { color: '#8b949e', maxRotation: 0, autoSkip: true, maxTicksLimit: 12 }, grid: { color: 'rgba(48,54,61,.3)' } },
+                y: { ticks: { color: '#8b949e' }, grid: { color: 'rgba(48,54,61,.3)' }, beginAtZero: true }
             }
         }
     });
@@ -168,8 +223,7 @@ if (typeof Chart !== 'undefined') {
     load();
 } else {
     document.querySelectorAll('canvas').forEach(c => c.remove());
-    document.querySelectorAll('.card h2').forEach(h => h.insertAdjacentHTML('afterend', '<div class="empty">Chart.js não carregou (sem internet?). Mostrando dados brutos abaixo.</div>'));
-    // Fallback: mostra JSON cru
+    document.querySelectorAll('.card h2').forEach(h => h.insertAdjacentHTML('afterend', '<div class="empty">Chart.js não carregou (sem internet?).</div>'));
     load().then(() => {
         const pre = document.createElement('pre');
         pre.className = 'muted'; pre.style.cssText = 'font-size:11px;overflow:auto;max-height:300px;';

@@ -328,7 +328,13 @@ function parseRetryAfterMs(retryAfterRaw) {
 }
 function markAccountFailure(account, status, reason = '', retryAfterRaw = null) {
     if (!account) return;
-    account.failures++;
+    account.failures = (account.failures || 0) + 1;
+    // Requisito RC: qualquer erro conta — ao atingir o threshold (3), o probe
+    // de vida é disparado (1 prompt/min × 3). A conta só morre se todos falharem.
+    if (account.failures >= ACCOUNT_DEAD_THRESHOLD) {
+        console.log(`[account:${account.id}] ${account.failures} failures (HTTP ${status}) — starting liveness probe`);
+        scheduleAccountProbe(account);
+    }
     if ([401, 403, 429].includes(Number(status))) {
         // On 429, honor a valid Retry-After header (seconds or HTTP-date) when present;
         // otherwise fall back to the fixed env-configured cooldown.
@@ -344,14 +350,68 @@ function markAccountFailure(account, status, reason = '', retryAfterRaw = null) 
 // responses as account failures so multi-account failover actually kicks in.
 const EMPTY_FAILURE_COOLDOWN_MS = Number(process.env.DEEPSEEK_EMPTY_COOLDOWN_MS || 15000);
 const EMPTY_FAILURE_LIMIT = Number(process.env.DEEPSEEK_EMPTY_FAILURE_LIMIT || 2);
+// Probe de vida: quando uma conta atinge ACCOUNT_DEAD_THRESHOLD (3) falhas,
+// o sistema envia 1 prompt de teste por minuto (PROBE_ATTEMPTS no total).
+// Se qualquer probe responder → erros zeram e a conta fica viva.
+// Se todos falharem → a conta é marcada como morta (dead: true).
+const PROBE_ATTEMPTS = Number(process.env.DEEPSEEK_PROBE_ATTEMPTS || 3);
+const PROBE_INTERVAL_MS = Number(process.env.DEEPSEEK_PROBE_INTERVAL_MS || 60 * 1000);
+const PROBE_PROMPT = 'ping'; // mínimo — só queremos saber se a conta responde
+const probeInFlight = new Set(); // account.id -> true (evita probes duplicados)
+
+function accountAlive(account) {
+    if (!account) return;
+    if (account.dead) {
+        account.dead = false;
+        console.log(`[account:${account.id}] auto-recovered (alive again)`);
+    }
+    if (account.failures !== 0) {
+        account.failures = 0;
+        console.log(`[account:${account.id}] failures reset to 0 (success)`);
+    }
+}
+
+/** Dispara o probe de vida (async, não bloqueia a request atual). */
+function scheduleAccountProbe(account) {
+    if (!account || probeInFlight.has(account.id)) return;
+    probeInFlight.add(account.id);
+    console.log(`[account:${account.id}] reached ${account.failures} failures — starting liveness probe (${PROBE_ATTEMPTS}× 1/min)`);
+    (async () => {
+        try {
+            for (let attempt = 1; attempt <= PROBE_ATTEMPTS; attempt++) {
+                await new Promise(r => setTimeout(r, PROBE_INTERVAL_MS).unref());
+                if (account.dead) break; // já morta por outro caminho
+                console.log(`[account:${account.id}] probe ${attempt}/${PROBE_ATTEMPTS} — sending test prompt...`);
+                try {
+                    const { resp } = await askDeepSeekStream(PROBE_PROMPT, '__probe__', 'deepseek-reasoner', [], account);
+                    const result = await readDeepSeekResponse(resp.body);
+                    if (result && result.content && result.content.trim().length > 0) {
+                        console.log(`[account:${account.id}] PROBE ${attempt} RESPONDED — account alive, failures reset`);
+                        accountAlive(account);
+                        return;
+                    }
+                    console.log(`[account:${account.id}] probe ${attempt} empty/failed`);
+                } catch (probeErr) {
+                    console.log(`[account:${account.id}] probe ${attempt} error: ${probeErr.message}`);
+                }
+            }
+            // Todos os probes falharam → conta morta de verdade
+            account.dead = true;
+            console.log(`[account:${account.id}] all ${PROBE_ATTEMPTS} probes failed — MARKED DEAD (threshold ${ACCOUNT_DEAD_THRESHOLD})`);
+        } finally {
+            probeInFlight.delete(account.id);
+        }
+    })();
+}
+
 function markAccountEmptyFailure(account) {
     if (!account) return;
     account.failures = (account.failures || 0) + 1;
-    // Marca como "morta" após ACCOUNT_DEAD_THRESHOLD (3) falhas consecutivas.
-    // A conta volta a viver automaticamente quando responde (ver onSuccessfulCall).
+    // Quando atinge o threshold, NÃO marca morta imediatamente — dispara o
+    // probe de vida. A conta só morre se todos os probes falharem.
     if (account.failures >= ACCOUNT_DEAD_THRESHOLD) {
-        account.dead = true;
-        console.log(`[account:${account.id}] MARKED DEAD after ${account.failures} consecutive failures (threshold ${ACCOUNT_DEAD_THRESHOLD}). Will auto-recover on next success.`);
+        console.log(`[account:${account.id}] ${account.failures} consecutive failures (threshold ${ACCOUNT_DEAD_THRESHOLD}) — starting liveness probe`);
+        scheduleAccountProbe(account);
     }
     if (account.failures >= EMPTY_FAILURE_LIMIT) {
         account.cooldownUntil = Date.now() + EMPTY_FAILURE_COOLDOWN_MS;
@@ -660,14 +720,9 @@ async function askDeepSeekStream(prompt, agentId, model = 'deepseek-reasoner', r
     const account = preferredAccount || await selectAccountForSession(session);
     const dsHeaders = account.headers;
     account.lastUsedAt = Date.now();
-    // Conta respondeu (ou foi selecionada com sucesso) → deixa de ser "morta".
-    // Falhas acumuladas só contam se o PROXY não conseguir extrair resposta;
-    // aqui a conta foi escolhida para a chamada, então resetamos o marcador.
-    if (account.dead) {
-        account.dead = false;
-        account.failures = 0;
-        console.log(`[account:${account.id}] auto-recovered (alive again)`);
-    }
+    // NÃO zerar failures aqui: a conta foi selecionada, mas ainda não se sabe
+    // se ela vai RESPONDER. O reset acontece no ponto onde a resposta com
+    // conteúdo é confirmada (ver readDeepSeekResponse → accountAlive).
     // Per-call cooldown: hold this account in "wait" so rapid-fire clients
     // (OpenCode, etc.) cannot spin up a new DeepSeek chat every few seconds.
     account.cooldownUntil = Date.now() + ACCOUNT_CALL_COOLDOWN_MS;
@@ -703,9 +758,13 @@ async function askDeepSeekStream(prompt, agentId, model = 'deepseek-reasoner', r
     }
     let chalJson;
     try { chalJson = JSON.parse(chalText); }
-    catch (e) { throw new Error(`DeepSeek returned non-JSON PoW response. Run npm run doctor. First chars: ${chalText.substring(0, 120)}`); }
+    catch (e) {
+        markAccountFailure(account, cr.status || 500, 'pow non-json');
+        throw new Error(`DeepSeek returned non-JSON PoW response. Run npm run doctor. First chars: ${chalText.substring(0, 120)}`);
+    }
     const challenge = chalJson?.data?.biz_data?.challenge;
     if (!challenge) {
+        markAccountFailure(account, cr.status || 200, 'pow no challenge');
         throw new Error('DeepSeek PoW response has no data.biz_data.challenge. Auth may be expired, captcha may be required, or DeepSeek changed Web API. Run npm run doctor, then npm run auth.');
     }
     const answer = await solvePOW(challenge, account.config);
@@ -1986,6 +2045,16 @@ const server = http.createServer(async (req, res) => {
             const elapsed = Date.now() - startTime;
             console.log(`${agentTag} Got ${fullContent.length} chars (+${reasoningContent.length} reasoning chars) in ${elapsed}ms (msg#${session.messageCount})`);
 
+            // RESPOSTA com conteúdo → a conta está viva: erros voltam a 0.
+            // (Requisito do RC: se a conta tem 1-2 erros e depois responde,
+            //  os erros devem retornar a 0.)
+            if (fullContent && fullContent.trim().length > 0) {
+                const responderAcct = uploadAccount || (session.accountId ? accounts.find(a => a.id === session.accountId) : null);
+                if (responderAcct && responderAcct.failures > 0) {
+                    accountAlive(responderAcct);
+                }
+            }
+
             if ((!fullContent || fullContent.trim().length === 0) && modelError) {
                 metrics.recordError(url.pathname);
                 res.writeHead(502, { 'Content-Type': 'application/json' });
@@ -2235,6 +2304,7 @@ module.exports = {
         applyResponsePatchOperations,
         selectAccountForSession,
         markAccountEmptyFailure,
+        accountAlive,
         getAccounts: () => accounts,
         resetAccounts: () => { accounts.length = 0; },
         _setAccountsForTest: (arr) => { accounts.length = 0; for (const a of arr) accounts.push(a); },
@@ -2249,5 +2319,7 @@ module.exports = {
     },
     parseToolCall,
     parseToolCalls,
+    accountAlive,
+    markAccountEmptyFailure,
     toolcallNormalizer: normalizeToolCall ? require('./toolcall_normalizer.js') : null,
 };

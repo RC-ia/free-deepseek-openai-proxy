@@ -5,22 +5,60 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Login — FreeDeepseekAPI</title>
 <style>
-:root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --red:#f85149; }
-* { box-sizing:border-box; margin:0; padding:0; }
-body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:var(--bg); color:var(--text); display:flex; align-items:center; justify-content:center; min-height:100vh; }
-.login-box { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:36px; width:100%; max-width:360px; }
-.login-box h2 { margin-bottom:6px; text-align:center; font-size:20px; }
-.login-box p { color:var(--muted); text-align:center; font-size:13px; margin-bottom:24px; }
-.login-box input { width:100%; padding:11px 13px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:8px; margin-bottom:14px; font-size:14px; }
-.login-box input:focus { outline:none; border-color:var(--accent); }
-.login-box button { width:100%; padding:11px; background:var(--accent); color:#fff; border:none; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer; }
-.login-box button:hover { filter:brightness(1.1); }
-.err { color:var(--red); font-size:13px; text-align:center; margin-top:12px; min-height:18px; }
+:root {
+    --bg: #0a0e17;
+    --bg-grad: radial-gradient(1200px 600px at 20% -10%, rgba(88,166,255,.08), transparent 60%),
+                radial-gradient(1000px 500px at 90% 110%, rgba(188,140,255,.06), transparent 60%);
+    --panel: rgba(22,27,34,.85);
+    --border: rgba(48,54,61,.6);
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --accent-2: #bc8cff;
+    --red: #f85149;
+    --shadow: 0 8px 32px rgba(0,0,0,.4);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg); background-image: var(--bg-grad);
+    color: var(--text); display: flex; align-items: center; justify-content: center; min-height: 100vh;
+}
+.login-box {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 20px;
+    padding: 40px; width: 100%; max-width: 380px; backdrop-filter: blur(12px);
+    box-shadow: var(--shadow); animation: fadeUp .4s ease;
+}
+@keyframes fadeUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+.logo-icon {
+    width: 52px; height: 52px; border-radius: 14px; margin: 0 auto 18px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    display: flex; align-items: center; justify-content: center; font-size: 26px;
+    box-shadow: 0 0 30px rgba(88,166,255,.35);
+}
+.login-box h2 { margin-bottom: 8px; text-align: center; font-size: 22px; font-weight: 700; }
+.login-box p { color: var(--muted); text-align: center; font-size: 13px; margin-bottom: 28px; }
+.login-box input {
+    width: 100%; padding: 12px 14px; background: rgba(13,17,23,.8); color: var(--text);
+    border: 1px solid var(--border); border-radius: 10px; margin-bottom: 14px; font-size: 14px;
+    transition: border-color .2s, box-shadow .2s;
+}
+.login-box input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(88,166,255,.15); }
+.login-box button {
+    width: 100%; padding: 12px; border: none; border-radius: 10px; font-size: 14px; font-weight: 700;
+    cursor: pointer; color: #fff;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    transition: filter .2s, transform .1s;
+}
+.login-box button:hover { filter: brightness(1.1); }
+.login-box button:active { transform: scale(.98); }
+.err { color: var(--red); font-size: 13px; text-align: center; margin-top: 12px; min-height: 18px; }
 </style>
 </head>
 <body>
 <div class="login-box">
-    <h2>🔐 FreeDeepseekAPI</h2>
+    <div class="logo-icon">⚡</div>
+    <h2>FreeDeepseekAPI</h2>
     <p>Acesso restrito ao dashboard</p>
     <form id="login-form">
         <input type="password" id="password" placeholder="Senha" autocomplete="current-password" required>

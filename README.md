@@ -116,13 +116,21 @@ Metrics are aggregated into **5-minute buckets** aligned to the clock, persisted
 to `metrics.json` (written every 5 min + on exit), and pruned after **30 days**
 (`METRICS_RETENTION_DAYS`). Token counts are approximate (chars ÷ 4).
 
-### Account health — "dead account" detection
+### Account health — "dead account" detection + liveness probe
 
-- An account is marked **dead** after **3 consecutive failed responses**
-  (`DEEPSEEK_ACCOUNT_DEAD_THRESHOLD`, default `3`).
+- An account accumulates **consecutive failures** (empty responses, HTTP errors,
+  PoW/auth failures).
+- At **3 failures** (`DEEPSEEK_ACCOUNT_DEAD_THRESHOLD`, default `3`) the proxy
+  does **NOT** mark the account dead immediately — it starts a **liveness probe**:
+  sends **1 test prompt per minute** (`DEEPSEEK_PROBE_INTERVAL_MS`, default 60 s)
+  for **3 attempts** (`DEEPSEEK_PROBE_ATTEMPTS`).
+  - If **any probe responds** → failures reset to 0, account stays alive.
+  - If **all probes fail** → account is marked **dead**.
 - Dead accounts are skipped by the pool while healthier accounts exist; they are
   still used as a **last-resort fallback** so the proxy never fully stalls.
-- The account **auto-recovers** on the next successful call (`dead` → `alive`).
+- **Recovery**: if a live request to the account succeeds (any time, with 1-2
+  prior failures or even after being dead), failures reset to 0 and the account
+  is alive again.
 
 ### Auth (optional)
 

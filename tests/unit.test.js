@@ -470,3 +470,47 @@ test('parseToolCall recovers nameless <tool_call> with "skill" key', () => {
 });
 
 
+
+// ── Account health / liveness probe (RC requirement) ──
+
+test('accountAlive resets failures and dead flag', () => {
+  serverInternals.resetAccounts();
+  serverInternals._setAccountsForTest([{ id: 'probe1', config: { token: 't', cookie: 'c' }, cooldownUntil: 0, failures: 3, dead: true, lastUsedAt: 0 }]);
+  const acct = serverInternals.getAccounts()[0];
+  serverInternals.accountAlive(acct);
+  assert.equal(acct.failures, 0);
+  assert.equal(acct.dead, false);
+});
+
+test('markAccountEmptyFailure: 1-2 failures do NOT mark dead', () => {
+  serverInternals.resetAccounts();
+  serverInternals._setAccountsForTest([{ id: 'probe2', config: { token: 't', cookie: 'c' }, cooldownUntil: 0, failures: 0, dead: false, lastUsedAt: 0 }]);
+  const acct = serverInternals.getAccounts()[0];
+  serverInternals.markAccountEmptyFailure(acct);
+  assert.equal(acct.failures, 1);
+  assert.equal(acct.dead, false);
+  serverInternals.markAccountEmptyFailure(acct);
+  assert.equal(acct.failures, 2);
+  assert.equal(acct.dead, false);
+});
+
+test('markAccountEmptyFailure: 3 failures starts probe (not immediately dead)', () => {
+  serverInternals.resetAccounts();
+  serverInternals._setAccountsForTest([{ id: 'probe3', config: { token: 't', cookie: 'c' }, cooldownUntil: 0, failures: 0, dead: false, lastUsedAt: 0 }]);
+  const acct = serverInternals.getAccounts()[0];
+  serverInternals.markAccountEmptyFailure(acct);
+  serverInternals.markAccountEmptyFailure(acct);
+  serverInternals.markAccountEmptyFailure(acct);
+  // A conta NÃO é marcada morta imediatamente — o probe de vida inicia (async).
+  assert.equal(acct.failures, 3);
+  assert.equal(acct.dead, false);
+});
+
+test('success response with 1-2 prior failures resets to 0 (accountAlive)', () => {
+  serverInternals.resetAccounts();
+  serverInternals._setAccountsForTest([{ id: 'probe4', config: { token: 't', cookie: 'c' }, cooldownUntil: 0, failures: 2, dead: false, lastUsedAt: 0 }]);
+  const acct = serverInternals.getAccounts()[0];
+  serverInternals.accountAlive(acct);
+  assert.equal(acct.failures, 0);
+  assert.equal(acct.dead, false);
+});
